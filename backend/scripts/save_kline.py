@@ -1,5 +1,3 @@
-# backend/app/jobs/fetch_candles.py
-
 import requests
 from datetime import datetime, timezone
 
@@ -26,41 +24,43 @@ def get_market_id() -> str:
     )
 
     if not result.data:
-        raise RuntimeError("marketsテーブルにBTCUSDTの設定が見つかりません。")
+        raise RuntimeError("markets に BTCUSDT がありません。先にINSERTしてください。")
 
     return result.data[0]["id"]
 
 
-def fetch_bybit_klines(limit: int = 5) -> list[list[str]]:
+def fetch_klines():
     params = {
         "category": "linear",
         "symbol": SYMBOL,
         "interval": "1",
-        "limit": limit,
+        "limit": 5,
     }
 
-    response = requests.get(BYBIT_URL, params=params, timeout=10)
-    response.raise_for_status()
+    res = requests.get(BYBIT_URL, params=params, timeout=10)
+    res.raise_for_status()
 
-    data = response.json()
+    data = res.json()
 
     if data.get("retCode") != 0:
-        raise RuntimeError(f"Bybit API error: {data}")
+        raise RuntimeError(data)
 
     return data["result"]["list"]
 
 
-def convert_to_candle_rows(market_id: str, klines: list[list[str]]) -> list[dict]:
+def to_candle_rows(market_id: str, klines: list[list[str]]):
     rows = []
 
     for item in klines:
+        open_time = datetime.fromtimestamp(
+            int(item[0]) / 1000,
+            tz=timezone.utc,
+        ).isoformat()
+
         rows.append(
             {
                 "market_id": market_id,
-                "open_time": datetime.fromtimestamp(
-                    int(item[0]) / 1000,
-                    tz=timezone.utc,
-                ).isoformat(),
+                "open_time": open_time,
                 "open": item[1],
                 "high": item[2],
                 "low": item[3],
@@ -73,24 +73,22 @@ def convert_to_candle_rows(market_id: str, klines: list[list[str]]) -> list[dict
     return rows
 
 
-def save_candles(rows: list[dict]) -> list[dict]:
+def save_candles(rows):
     result = (
         supabase.table("candles")
         .upsert(rows, on_conflict="market_id,open_time")
         .execute()
     )
-
     return result.data
 
 
-def main() -> None:
+def main():
     market_id = get_market_id()
-    klines = fetch_bybit_klines(limit=1)
-    rows = convert_to_candle_rows(market_id, klines)
+    klines = fetch_klines()
+    rows = to_candle_rows(market_id, klines)
     saved = save_candles(rows)
 
     print(f"saved candles: {len(saved)}")
-
     for row in saved:
         print(row["open_time"], row["close"])
 
