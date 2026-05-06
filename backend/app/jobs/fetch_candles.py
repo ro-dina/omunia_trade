@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 
 from app.db.supabase_client import supabase
 
-BYBIT_URL = "https://api-testnet.bybit.com/v5/market/kline"
+#BYBIT_URL = "https://api-testnet.bybit.com/v5/market/kline"
+BYBIT_URL = "https://api.bybit.com/v5/market/kline"
 
 EXCHANGE = "bybit"
 SYMBOL = "BTCUSDT"
@@ -66,7 +67,8 @@ def convert_to_candle_rows(market_id: str, klines: list[list[str]]) -> list[dict
                 "low": item[3],
                 "close": item[4],
                 "volume": item[5],
-                "source": "bybit-testnet",
+                #"source": "bybit-testnet",
+                "source": "bybit-mainnet-public"
             }
         )
 
@@ -85,14 +87,20 @@ def save_candles(rows: list[dict]) -> list[dict]:
 
 def main() -> None:
     market_id = get_market_id()
-    klines = fetch_bybit_klines(limit=1)
-    rows = convert_to_candle_rows(market_id, klines)
+
+    # 最新足は形成中の可能性があるので2本取得する
+    klines = fetch_bybit_klines(limit=2)
+
+    # 1つ前の確定済み足だけ保存する
+    confirmed_klines = [klines[1]]
+
+    rows = convert_to_candle_rows(market_id, confirmed_klines)
     saved = save_candles(rows)
 
     print(f"saved candles: {len(saved)}")
 
     for row in saved:
-        print(row["open_time"], row["close"])
+        print(row["open_time"], row["close"], "volume:", row["volume"])
 
 
 if __name__ == "__main__":
