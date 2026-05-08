@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import CandlestickChart from "@/components/chart/CandlestickChart";
 import { supabase } from "@/lib/supabase";
@@ -29,17 +29,22 @@ export default function ChartClient() {
     useState<PortfolioSnapshot | null>(null);
   const [openPosition, setOpenPosition] = useState<Position | null>(null);
   const [latestOrder, setLatestOrder] = useState<Order | null>(null);
-
+  const [timeframe, setTimeframe] = useState<"1m" | "5m">("1m");
   const [orders, setOrders] = useState<Order[]>([]);
   const [portfolioSnapshots, setPortfolioSnapshots] = useState<
     PortfolioSnapshot[]
   >([]);
 
-  async function fetchCandles() {
+  const fetchCandles = useCallback(async () => {
     const { data, error } = await supabase
       .from("candles")
       .select("*")
-      .eq("source", "bybit-mainnet-public")
+      .eq(
+        "source",
+        timeframe === "1m"
+          ? "bybit-mainnet-public"
+          : "bybit-mainnet-public-5m",
+      )
       .order("open_time", { ascending: false })
       .limit(300);
 
@@ -105,18 +110,15 @@ export default function ChartClient() {
         .limit(200),
     ]);
 
-    console.log("ordersRes", ordersRes);
-    console.log("portfolioSnapshotsRes", portfolioSnapshotsRes);
-
-setLatestSignal((signalRes.data ?? null) as Signal | null);
-setLatestPortfolio((portfolioRes.data ?? null) as PortfolioSnapshot | null);
-setOpenPosition((positionRes.data ?? null) as Position | null);
-setLatestOrder((orderRes.data ?? null) as Order | null);
-setOrders(((ordersRes.data ?? []) as Order[]).reverse());
-setPortfolioSnapshots(
-  ((portfolioSnapshotsRes.data ?? []) as PortfolioSnapshot[]).reverse(),
-);
-  }
+    setLatestSignal((signalRes.data ?? null) as Signal | null);
+    setLatestPortfolio((portfolioRes.data ?? null) as PortfolioSnapshot | null);
+    setOpenPosition((positionRes.data ?? null) as Position | null);
+    setLatestOrder((orderRes.data ?? null) as Order | null);
+    setOrders(((ordersRes.data ?? []) as Order[]).reverse());
+    setPortfolioSnapshots(
+      ((portfolioSnapshotsRes.data ?? []) as PortfolioSnapshot[]).reverse(),
+    );
+  }, [timeframe]);
 
   useEffect(() => {
     const fetchInitialCandles = window.setTimeout(() => {
@@ -131,7 +133,7 @@ setPortfolioSnapshots(
       window.clearTimeout(fetchInitialCandles);
       window.clearInterval(timer);
     };
-  }, []);
+  }, [fetchCandles]);
 
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
@@ -141,6 +143,30 @@ setPortfolioSnapshots(
             ? "Loading..."
             : `${candles.length} candles loaded`}
         </span>
+
+        <div className="mb-4 flex gap-2">
+          <button
+            onClick={() => setTimeframe("1m")}
+            className={`rounded-lg px-3 py-1 text-sm ${
+              timeframe === "1m"
+                ? "bg-blue-500 text-white"
+                : "bg-slate-800 text-slate-400"
+            }`}
+          >
+            1m
+          </button>
+
+          <button
+            onClick={() => setTimeframe("5m")}
+            className={`rounded-lg px-3 py-1 text-sm ${
+              timeframe === "5m"
+                ? "bg-blue-500 text-white"
+                : "bg-slate-800 text-slate-400"
+            }`}
+          >
+            5m
+          </button>
+        </div>
 
         <span>
           {lastUpdated ? `Last updated: ${lastUpdated}` : ""}
