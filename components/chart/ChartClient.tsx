@@ -14,6 +14,9 @@ import type {
   Signal,
 } from "@/lib/types";
 
+import EquityCurveChart from "@/components/trading/EquityCurveChart";
+import TradeHistoryTable from "@/components/trading/TradeHistoryTable";
+
 const POLLING_INTERVAL_MS = 30_000;
 
 export default function ChartClient() {
@@ -26,6 +29,11 @@ export default function ChartClient() {
     useState<PortfolioSnapshot | null>(null);
   const [openPosition, setOpenPosition] = useState<Position | null>(null);
   const [latestOrder, setLatestOrder] = useState<Order | null>(null);
+
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [portfolioSnapshots, setPortfolioSnapshots] = useState<
+    PortfolioSnapshot[]
+  >([]);
 
   async function fetchCandles() {
     const { data, error } = await supabase
@@ -48,7 +56,14 @@ export default function ChartClient() {
     setErrorMessage(null);
     setLoading(false);
 
-    const [signalRes, portfolioRes, positionRes, orderRes] = await Promise.all([
+    const [
+      signalRes,
+      portfolioRes,
+      positionRes,
+      orderRes,
+      ordersRes,
+      portfolioSnapshotsRes,
+    ] = await Promise.all([
       supabase
         .from("signals")
         .select("*")
@@ -76,12 +91,31 @@ export default function ChartClient() {
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
-]);
+
+      supabase
+        .from("orders")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(20),
+
+      supabase
+        .from("portfolio_snapshots")
+        .select("*")
+        .order("snapshot_time", { ascending: false })
+        .limit(200),
+    ]);
+
+    console.log("ordersRes", ordersRes);
+    console.log("portfolioSnapshotsRes", portfolioSnapshotsRes);
 
 setLatestSignal((signalRes.data ?? null) as Signal | null);
 setLatestPortfolio((portfolioRes.data ?? null) as PortfolioSnapshot | null);
 setOpenPosition((positionRes.data ?? null) as Position | null);
 setLatestOrder((orderRes.data ?? null) as Order | null);
+setOrders(((ordersRes.data ?? []) as Order[]).reverse());
+setPortfolioSnapshots(
+  ((portfolioSnapshotsRes.data ?? []) as PortfolioSnapshot[]).reverse(),
+);
   }
 
   useEffect(() => {
@@ -124,6 +158,8 @@ setLatestOrder((orderRes.data ?? null) as Order | null);
         openPosition={openPosition}
         latestOrder={latestOrder}
       />
+      <EquityCurveChart snapshots={portfolioSnapshots} />
+      <TradeHistoryTable orders={orders} />
     </section>
   );
 }

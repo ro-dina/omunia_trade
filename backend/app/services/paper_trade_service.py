@@ -12,6 +12,7 @@ SOURCE = "bybit-mainnet-public"
 INITIAL_CASH = 10_000.0
 TRADE_NOTIONAL = 1_000.0
 FEE_RATE = 0.0006  # 0.06%想定
+#FEE_RATE = 0
 
 
 def to_float(value) -> float:
