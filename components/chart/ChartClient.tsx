@@ -6,6 +6,8 @@ import CandlestickChart from "@/components/chart/CandlestickChart";
 import { supabase } from "@/lib/supabase";
 
 import BotStatusPanel from "@/components/trading/BotStatusPanel";
+import EquityCurveChart from "@/components/trading/EquityCurveChart";
+import TradeHistoryTable from "@/components/trading/TradeHistoryTable";
 import type {
   Candle,
   Order,
@@ -13,10 +15,6 @@ import type {
   Position,
   Signal,
 } from "@/lib/types";
-
-import EquityCurveChart from "@/components/trading/EquityCurveChart";
-import TradeHistoryTable from "@/components/trading/TradeHistoryTable";
-
 
 const POLLING_INTERVAL_MS = 30_000;
 
@@ -167,7 +165,6 @@ export default function ChartClient() {
     setLastUpdated(new Date().toLocaleTimeString());
     setErrorMessage(null);
     setLoading(false);
-    
 
     const [
       signalRes,
@@ -183,14 +180,14 @@ export default function ChartClient() {
         .select("*")
         .order("signal_time", { ascending: false })
         .limit(1)
-        .single(),
+        .maybeSingle(),
 
       supabase
         .from("portfolio_snapshots")
         .select("*")
         .order("snapshot_time", { ascending: false })
         .limit(1)
-        .single(),
+        .maybeSingle(),
 
       supabase
         .from("positions")
@@ -244,7 +241,6 @@ export default function ChartClient() {
     const timer = window.setInterval(() => {
       void fetchCandles();
     }, POLLING_INTERVAL_MS);
-    
 
     return () => {
       window.clearTimeout(fetchInitialCandles);
@@ -255,11 +251,7 @@ export default function ChartClient() {
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
       <div className="mb-3 flex items-center justify-between text-sm text-slate-400">
-        <span>
-          {loading
-            ? "Loading..."
-            : `${candles.length} candles loaded`}
-        </span>
+        <span>{loading ? "Loading..." : `${candles.length} candles loaded`}</span>
 
         <div className="mb-4 flex gap-2">
           <button
@@ -285,9 +277,7 @@ export default function ChartClient() {
           </button>
         </div>
 
-        <span>
-          {lastUpdated ? `Last updated: ${lastUpdated}` : ""}
-        </span>
+        <span>{lastUpdated ? `Last updated: ${lastUpdated}` : ""}</span>
       </div>
 
       {errorMessage ? (
@@ -295,14 +285,15 @@ export default function ChartClient() {
       ) : (
         <CandlestickChart candles={candles} />
       )}
+
       <BotStatusPanel
         latestSignal={latestSignal}
         latestPortfolio={latestPortfolio}
         openPosition={openPosition}
         latestOrder={latestOrder}
       />
-      <EquityCurveChart snapshots={portfolioSnapshots} />
-      <TradeHistoryTable orders={orders} />
+      <EquityCurveChart snapshots={portfolioSnapshots ?? []} />
+      <TradeHistoryTable orders={orders ?? []} />
       <BacktestRankingTable results={backtestResults} />
     </section>
   );
