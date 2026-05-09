@@ -12,15 +12,23 @@ MARKET_TYPE = "linear"
 TIMEFRAME = "5m"
 SOURCE = "bybit-mainnet-public-5m"
 
-SHORT_PERIOD = 30
-LONG_PERIOD = 150
+SHORT_PERIOD = 10
+LONG_PERIOD = 50
 TIMEFRAME_SECONDS = 300
 FETCH_CANDLE_LIMIT = LONG_PERIOD + 20
 
-STRATEGY_NAME = f"sma{SHORT_PERIOD}_sma{LONG_PERIOD}_cross_{TIMEFRAME}"
+RSI_PERIOD = 14
+RSI_BUY_THRESHOLD = 60.0
+RSI_SELL_THRESHOLD = 40.0
 
-TAKE_PROFIT_RATE = 0.01   # +1.0%
-STOP_LOSS_RATE = 0.003    # -0.3%
+STRATEGY_NAME = (
+    f"sma{SHORT_PERIOD}_sma{LONG_PERIOD}_cross_"
+    f"rsi{int(RSI_BUY_THRESHOLD)}_{int(RSI_SELL_THRESHOLD)}_"
+    f"{TIMEFRAME}"
+)
+
+TAKE_PROFIT_RATE = 0.015  # +1.5%
+STOP_LOSS_RATE = 0.008    # -0.8%
 
 INITIAL_CASH = 10_000.0
 
@@ -82,12 +90,53 @@ def calculate_sma(candles: list[dict], period: int) -> list[Optional[float]]:
     return values
 
 
+def calculate_rsi(candles: list[dict], period: int = RSI_PERIOD) -> list[Optional[float]]:
+    values: list[Optional[float]] = [None] * len(candles)
+
+    if len(candles) <= period:
+        return values
+
+    gains: list[float] = []
+    losses: list[float] = []
+
+    for i in range(1, period + 1):
+        change = to_float(candles[i]["close"]) - to_float(candles[i - 1]["close"])
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
+    if avg_loss == 0:
+        values[period] = 100.0
+    else:
+        rs = avg_gain / avg_loss
+        values[period] = 100.0 - (100.0 / (1.0 + rs))
+
+    for i in range(period + 1, len(candles)):
+        change = to_float(candles[i]["close"]) - to_float(candles[i - 1]["close"])
+        gain = max(change, 0.0)
+        loss = max(-change, 0.0)
+
+        avg_gain = ((avg_gain * (period - 1)) + gain) / period
+        avg_loss = ((avg_loss * (period - 1)) + loss) / period
+
+        if avg_loss == 0:
+            values[i] = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            values[i] = 100.0 - (100.0 / (1.0 + rs))
+
+    return values
+
+
 def detect_latest_sma_cross(candles: list[dict]) -> Optional[str]:
     if len(candles) < LONG_PERIOD + 1:
         return None
 
     short_sma = calculate_sma(candles, SHORT_PERIOD)
     long_sma = calculate_sma(candles, LONG_PERIOD)
+    rsi_values = calculate_rsi(candles)
 
     i = len(candles) - 1
     prev_i = i - 1
@@ -107,13 +156,18 @@ def detect_latest_sma_cross(candles: list[dict]) -> Optional[str]:
     if None in (prev_short, prev_long, curr_short, curr_long):
         return None
 
+    curr_rsi = rsi_values[i]
+
+    if curr_rsi is None:
+        return None
+
     prev_diff = prev_short - prev_long
     curr_diff = curr_short - curr_long
 
-    if prev_diff <= 0 and curr_diff > 0:
+    if prev_diff <= 0 and curr_diff > 0 and curr_rsi > RSI_BUY_THRESHOLD:
         return "BUY"
 
-    if prev_diff >= 0 and curr_diff < 0:
+    if (prev_diff >= 0 and curr_diff < 0) or curr_rsi < RSI_SELL_THRESHOLD:
         return "SELL"
 
     return None
@@ -138,6 +192,9 @@ def save_signal(
             "meta": {
                 "short_period": SHORT_PERIOD,
                 "long_period": LONG_PERIOD,
+                "rsi_period": RSI_PERIOD,
+                "rsi_buy_threshold": RSI_BUY_THRESHOLD,
+                "rsi_sell_threshold": RSI_SELL_THRESHOLD,
                 "timeframe": TIMEFRAME,
                 "source": SOURCE,
                 "take_profit_rate": TAKE_PROFIT_RATE,
@@ -443,7 +500,10 @@ def run_paper_strategy() -> None:
             market_id=market_id,
             candle=latest_candle,
             signal_type="BUY",
-            reason=f"SMA{SHORT_PERIOD} crossed above SMA{LONG_PERIOD}",
+            reason=(
+                f"SMA{SHORT_PERIOD} crossed above SMA{LONG_PERIOD} "
+                f"and RSI > {RSI_BUY_THRESHOLD}"
+            ),
         )
         execute_buy(market_id, latest_candle)
         return
@@ -453,7 +513,10 @@ def run_paper_strategy() -> None:
             market_id=market_id,
             candle=latest_candle,
             signal_type="SELL",
-            reason=f"SMA{SHORT_PERIOD} crossed below SMA{LONG_PERIOD}",
+            reason=(
+                f"SMA{SHORT_PERIOD} crossed below SMA{LONG_PERIOD} "
+                f"or RSI < {RSI_SELL_THRESHOLD}"
+            ),
         )
         execute_sell(market_id, latest_candle, reason="SMA_CROSS_SELL")
         return
@@ -462,7 +525,7 @@ def run_paper_strategy() -> None:
         market_id=market_id,
         candle=latest_candle,
         signal_type="HOLD",
-        reason="No SMA cross",
+        reason="No SMA/RSI signal",
     )
 
     update_mark_to_market(market_id, latest_candle)

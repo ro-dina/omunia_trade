@@ -17,6 +17,8 @@ def main() -> None:
         long_periods=long_periods,
         timeframe=timeframe,
         limit=limit,
+        rsi_buy_thresholds=[45.0, 50.0, 55.0, 60.0],
+        rsi_sell_thresholds=[35.0, 40.0, 45.0, 50.0],
     )
 
     print_optimization_results(results, top_n=10)
@@ -33,6 +35,8 @@ def main() -> None:
         limit=limit,
         take_profit_rate=best["take_profit_rate"],
         stop_loss_rate=best["stop_loss_rate"],
+        rsi_buy_threshold=best["rsi_buy_threshold"],
+        rsi_sell_threshold=best["rsi_sell_threshold"],
     )
 
 

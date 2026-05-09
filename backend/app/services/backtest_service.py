@@ -107,7 +107,7 @@ def calculate_sma(candles: list[dict], period: int) -> list[Optional[float]]:
         values.append(avg)
 
     return values
- 
+
 
 def calculate_rsi(candles: list[dict], period: int = RSI_PERIOD) -> list[Optional[float]]:
     values: list[Optional[float]] = [None] * len(candles)
@@ -185,6 +185,8 @@ def run_sma_cross_backtest(
     limit: int = 1000,
     take_profit_rate: float = TAKE_PROFIT_RATE,
     stop_loss_rate: float = STOP_LOSS_RATE,
+    rsi_buy_threshold: float = RSI_BUY_THRESHOLD,
+    rsi_sell_threshold: float = RSI_SELL_THRESHOLD,
 ) -> None:
     market_id = get_market_id_by_timeframe(timeframe)
     candles = fetch_backtest_candles(
@@ -193,9 +195,68 @@ def run_sma_cross_backtest(
         limit=limit,
     )
 
+    result = evaluate_sma_cross_backtest_with_candles(
+        candles=candles,
+        short_period=short_period,
+        long_period=long_period,
+        timeframe=timeframe,
+        take_profit_rate=take_profit_rate,
+        stop_loss_rate=stop_loss_rate,
+        rsi_buy_threshold=rsi_buy_threshold,
+        rsi_sell_threshold=rsi_sell_threshold,
+    )
+
+    print("===================================")
+    print(f"SMA{short_period} / SMA{long_period} Backtest Result")
+    print("===================================")
+    print(f"Symbol: {EXCHANGE} {SYMBOL} {MARKET_TYPE} {timeframe}")
+    print(f"Candles: {result['candles']}")
+    print(f"TP/SL: +{take_profit_rate * 100:.2f}% / -{stop_loss_rate * 100:.2f}%")
+    print(f"RSI: period={RSI_PERIOD}, buy>{rsi_buy_threshold}, sell<{rsi_sell_threshold}")
+    print(f"Initial cash: {INITIAL_CASH:.2f} USDT")
+    print(f"Final equity: {result['final_equity']:.2f} USDT")
+    print(f"Total return: {result['total_return']:.2f}%")
+    print(f"Realized PnL: {result['realized_pnl']:.2f} USDT")
+    print(f"Open position value: {result['open_position_value']:.2f} USDT")
+    print(f"BUY count: {result['buy_count']}")
+    print(f"SELL count: {result['sell_count']}")
+    print(f"Take profit exits: {result['take_profit_count']}")
+    print(f"Stop loss exits: {result['stop_loss_count']}")
+    print(f"Win rate: {result['win_rate']:.2f}%")
+    print("===================================")
+
+
+def evaluate_sma_cross_backtest_with_candles(
+    candles: list[dict],
+    short_period: int,
+    long_period: int,
+    timeframe: str = "1m",
+    take_profit_rate: float = TAKE_PROFIT_RATE,
+    stop_loss_rate: float = STOP_LOSS_RATE,
+    rsi_buy_threshold: float = RSI_BUY_THRESHOLD,
+    rsi_sell_threshold: float = RSI_SELL_THRESHOLD,
+) -> dict:
     if len(candles) < long_period + 10:
-        print("Not enough candles for backtest.")
-        return
+        return {
+            "short_period": short_period,
+            "long_period": long_period,
+            "timeframe": timeframe,
+            "candles": len(candles),
+            "final_equity": INITIAL_CASH,
+            "total_return": 0.0,
+            "realized_pnl": 0.0,
+            "buy_count": 0,
+            "sell_count": 0,
+            "win_rate": 0.0,
+            "open_position_value": 0.0,
+            "take_profit_count": 0,
+            "stop_loss_count": 0,
+            "take_profit_rate": take_profit_rate,
+            "stop_loss_rate": stop_loss_rate,
+            "rsi_period": RSI_PERIOD,
+            "rsi_buy_threshold": rsi_buy_threshold,
+            "rsi_sell_threshold": rsi_sell_threshold,
+        }
 
     short_sma = calculate_sma(candles, short_period)
     long_sma = calculate_sma(candles, long_period)
@@ -204,25 +265,12 @@ def run_sma_cross_backtest(
     cash = INITIAL_CASH
     position_qty = 0.0
     entry_price: Optional[float] = None
-
     trades: list[dict] = []
-    equity_curve: list[dict] = []
 
     for i in range(1, len(candles)):
         candle = candles[i]
         prev_candle = candles[i - 1]
-
         price = to_float(candle["close"])
-
-        asset_value = position_qty * price
-        total_equity = cash + asset_value
-
-        equity_curve.append(
-            {
-                "time": candle["open_time"],
-                "equity": total_equity,
-            }
-        )
 
         exit_reason = check_tp_sl_exit(
             position_qty=position_qty,
@@ -241,7 +289,6 @@ def run_sma_cross_backtest(
 
             trades.append(
                 {
-                    "time": candle["open_time"],
                     "side": "SELL",
                     "price": price,
                     "qty": position_qty,
@@ -277,11 +324,11 @@ def run_sma_cross_backtest(
         buy_signal = (
             prev_diff <= 0
             and curr_diff > 0
-            and curr_rsi > RSI_BUY_THRESHOLD
+            and curr_rsi > rsi_buy_threshold
         )
         sell_signal = (
             (prev_diff >= 0 and curr_diff < 0)
-            or curr_rsi < RSI_SELL_THRESHOLD
+            or curr_rsi < rsi_sell_threshold
         )
 
         if buy_signal and position_qty == 0:
@@ -296,7 +343,6 @@ def run_sma_cross_backtest(
 
                 trades.append(
                     {
-                        "time": candle["open_time"],
                         "side": "BUY",
                         "price": price,
                         "qty": qty,
@@ -315,7 +361,6 @@ def run_sma_cross_backtest(
 
             trades.append(
                 {
-                    "time": candle["open_time"],
                     "side": "SELL",
                     "price": price,
                     "qty": position_qty,
@@ -339,7 +384,6 @@ def run_sma_cross_backtest(
 
         trades.append(
             {
-                "time": candles[-1]["open_time"],
                 "side": "SELL",
                 "price": final_price,
                 "qty": position_qty,
@@ -364,46 +408,31 @@ def run_sma_cross_backtest(
     wins = len([t for t in trades if t["side"] == "SELL" and t["pnl"] > 0])
     losses = len([t for t in trades if t["side"] == "SELL" and t["pnl"] <= 0])
     closed_trades = wins + losses
-    win_rate = (wins / closed_trades * 100) if closed_trades > 0 else 0
+    win_rate = (wins / closed_trades * 100) if closed_trades > 0 else 0.0
 
     take_profit_count = len([t for t in trades if t.get("reason") == "TAKE_PROFIT"])
     stop_loss_count = len([t for t in trades if t.get("reason") == "STOP_LOSS"])
-    sma_exit_count = len([t for t in trades if t.get("reason") == "SMA_CROSS_SELL"])
-    forced_close_count = len([t for t in trades if t.get("reason") == "FORCED_CLOSE"])
 
-    print("===================================")
-    print(f"SMA{short_period} / SMA{long_period} Backtest Result")
-    print("===================================")
-    print(f"Symbol: {EXCHANGE} {SYMBOL} {MARKET_TYPE} {timeframe}")
-    print(f"Candles: {len(candles)}")
-    print(f"TP/SL: +{take_profit_rate * 100:.2f}% / -{stop_loss_rate * 100:.2f}%")
-    print(f"RSI: period={RSI_PERIOD}, buy>{RSI_BUY_THRESHOLD}, sell<{RSI_SELL_THRESHOLD}")
-    print(f"Initial cash: {INITIAL_CASH:.2f} USDT")
-    print(f"Final equity: {final_equity:.2f} USDT")
-    print(f"Total return: {total_return:.2f}%")
-    print(f"Realized PnL: {realized_pnl:.2f} USDT")
-    print(f"Open position value: {final_asset_value:.2f} USDT")
-    print(f"BUY count: {buy_count}")
-    print(f"SELL count: {sell_count}")
-    print(f"Take profit exits: {take_profit_count}")
-    print(f"Stop loss exits: {stop_loss_count}")
-    print(f"SMA exits: {sma_exit_count}")
-    print(f"Forced close exits: {forced_close_count}")
-    print(f"Win rate: {win_rate:.2f}%")
-    print("===================================")
-
-    print("\nRecent trades:")
-    for trade in trades[-10:]:
-        print(
-            trade["time"],
-            trade["side"],
-            f"price={trade['price']:.2f}",
-            f"qty={trade['qty']:.6f}",
-            f"fee={trade['fee']:.4f}",
-            f"pnl={trade['pnl']:.2f}",
-            f"reason={trade.get('reason', '-')}",
-        )
-
+    return {
+        "short_period": short_period,
+        "long_period": long_period,
+        "timeframe": timeframe,
+        "candles": len(candles),
+        "final_equity": final_equity,
+        "total_return": total_return,
+        "realized_pnl": realized_pnl,
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "win_rate": win_rate,
+        "open_position_value": final_asset_value,
+        "take_profit_count": take_profit_count,
+        "stop_loss_count": stop_loss_count,
+        "take_profit_rate": take_profit_rate,
+        "stop_loss_rate": stop_loss_rate,
+        "rsi_period": RSI_PERIOD,
+        "rsi_buy_threshold": rsi_buy_threshold,
+        "rsi_sell_threshold": rsi_sell_threshold,
+    }
 
 def evaluate_sma_cross_backtest(
     short_period: int,
@@ -620,6 +649,8 @@ def optimize_sma_parameters(
     limit: int = 1000,
     take_profit_rates: Optional[list[float]] = None,
     stop_loss_rates: Optional[list[float]] = None,
+    rsi_buy_thresholds: Optional[list[float]] = None,
+    rsi_sell_thresholds: Optional[list[float]] = None,
 ) -> list[dict]:
     results: list[dict] = []
 
@@ -629,6 +660,20 @@ def optimize_sma_parameters(
     if stop_loss_rates is None:
         stop_loss_rates = [0.003, 0.005, 0.008, 0.01]
 
+    if rsi_buy_thresholds is None:
+        rsi_buy_thresholds = [45.0, 50.0, 55.0, 60.0]
+
+    if rsi_sell_thresholds is None:
+        rsi_sell_thresholds = [35.0, 40.0, 45.0, 50.0]
+
+    market_id = get_market_id_by_timeframe(timeframe)
+    candles = fetch_backtest_candles(
+        market_id=market_id,
+        timeframe=timeframe,
+        limit=limit,
+    )
+    print(f"Loaded candles once: {len(candles)}")
+
     for short_period in short_periods:
         for long_period in long_periods:
             if short_period >= long_period:
@@ -636,20 +681,27 @@ def optimize_sma_parameters(
 
             for take_profit_rate in take_profit_rates:
                 for stop_loss_rate in stop_loss_rates:
-                    result = evaluate_sma_cross_backtest(
-                        short_period=short_period,
-                        long_period=long_period,
-                        timeframe=timeframe,
-                        limit=limit,
-                        take_profit_rate=take_profit_rate,
-                        stop_loss_rate=stop_loss_rate,
-                    )
-                    results.append(result)
+                    for rsi_buy_threshold in rsi_buy_thresholds:
+                        for rsi_sell_threshold in rsi_sell_thresholds:
+                            if rsi_sell_threshold >= rsi_buy_threshold:
+                                continue
+
+                            result = evaluate_sma_cross_backtest_with_candles(
+                                candles=candles,
+                                short_period=short_period,
+                                long_period=long_period,
+                                timeframe=timeframe,
+                                take_profit_rate=take_profit_rate,
+                                stop_loss_rate=stop_loss_rate,
+                                rsi_buy_threshold=rsi_buy_threshold,
+                                rsi_sell_threshold=rsi_sell_threshold,
+                            )
+
+                            results.append(result)
 
     results.sort(key=lambda x: x["final_equity"], reverse=True)
 
     return results
-
 
 def print_optimization_results(results: list[dict], top_n: int = 10) -> None:
     print("===================================")
@@ -681,7 +733,8 @@ def save_backtest_results(results: list[dict], top_n: int = 20) -> None:
             f"sma{result['long_period']}_"
             f"{result['timeframe']}_"
             f"tp{result['take_profit_rate']}_"
-            f"sl{result['stop_loss_rate']}"
+            f"sl{result['stop_loss_rate']}_"
+            f"rsi{result.get('rsi_buy_threshold')}_{result.get('rsi_sell_threshold')}"
         )
 
         rows.append(
@@ -710,8 +763,8 @@ def save_backtest_results(results: list[dict], top_n: int = 20) -> None:
                     "rank_source": "optimization",
                     "fee_rate": FEE_RATE,
                     "rsi_period": RSI_PERIOD,
-                    "rsi_buy_threshold": RSI_BUY_THRESHOLD,
-                    "rsi_sell_threshold": RSI_SELL_THRESHOLD,
+                    "rsi_buy_threshold": result.get("rsi_buy_threshold"),
+                    "rsi_sell_threshold": result.get("rsi_sell_threshold"),
                 },
             }
         )
