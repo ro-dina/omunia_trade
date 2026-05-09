@@ -12,14 +12,21 @@ MARKET_TYPE = "linear"
 TIMEFRAME = "5m"
 SOURCE = "bybit-mainnet-public-5m"
 
-SHORT_PERIOD = 10
-LONG_PERIOD = 50
+SHORT_PERIOD = 5
+LONG_PERIOD = 30
 TIMEFRAME_SECONDS = 300
 FETCH_CANDLE_LIMIT = LONG_PERIOD + 20
 
+
 RSI_PERIOD = 14
 RSI_BUY_THRESHOLD = 60.0
-RSI_SELL_THRESHOLD = 40.0
+RSI_SELL_THRESHOLD = 35.0
+
+MACD_FAST_PERIOD = 12
+MACD_SLOW_PERIOD = 26
+MACD_SIGNAL_PERIOD = 9
+USE_MACD_FILTER = True
+
 
 STRATEGY_NAME = (
     f"sma{SHORT_PERIOD}_sma{LONG_PERIOD}_cross_"
@@ -28,7 +35,7 @@ STRATEGY_NAME = (
 )
 
 TAKE_PROFIT_RATE = 0.015  # +1.5%
-STOP_LOSS_RATE = 0.008    # -0.8%
+STOP_LOSS_RATE = 0.003    # -0.8%
 
 INITIAL_CASH = 10_000.0
 
@@ -130,6 +137,74 @@ def calculate_rsi(candles: list[dict], period: int = RSI_PERIOD) -> list[Optiona
     return values
 
 
+# ===========================
+# MACD Calculation Functions
+# ===========================
+
+def calculate_ema(values: list[float], period: int) -> list[Optional[float]]:
+    result: list[Optional[float]] = [None] * len(values)
+
+    if len(values) < period:
+        return result
+
+    multiplier = 2 / (period + 1)
+    sma = sum(values[:period]) / period
+    result[period - 1] = sma
+
+    prev_ema = sma
+
+    for i in range(period, len(values)):
+        ema = (values[i] - prev_ema) * multiplier + prev_ema
+        result[i] = ema
+        prev_ema = ema
+
+    return result
+
+
+def calculate_macd(
+    candles: list[dict],
+    fast_period: int = MACD_FAST_PERIOD,
+    slow_period: int = MACD_SLOW_PERIOD,
+    signal_period: int = MACD_SIGNAL_PERIOD,
+) -> tuple[list[Optional[float]], list[Optional[float]], list[Optional[float]]]:
+    closes = [to_float(candle["close"]) for candle in candles]
+
+    fast_ema = calculate_ema(closes, fast_period)
+    slow_ema = calculate_ema(closes, slow_period)
+
+    macd_line: list[Optional[float]] = [None] * len(candles)
+
+    for i in range(len(candles)):
+        if fast_ema[i] is None or slow_ema[i] is None:
+            continue
+
+        macd_line[i] = fast_ema[i] - slow_ema[i]
+
+    compact_macd = [value for value in macd_line if value is not None]
+    compact_signal = calculate_ema(compact_macd, signal_period)
+
+    signal_line: list[Optional[float]] = [None] * len(candles)
+
+    compact_index = 0
+
+    for i in range(len(candles)):
+        if macd_line[i] is None:
+            continue
+
+        signal_line[i] = compact_signal[compact_index]
+        compact_index += 1
+
+    histogram: list[Optional[float]] = [None] * len(candles)
+
+    for i in range(len(candles)):
+        if macd_line[i] is None or signal_line[i] is None:
+            continue
+
+        histogram[i] = macd_line[i] - signal_line[i]
+
+    return macd_line, signal_line, histogram
+
+
 def detect_latest_sma_cross(candles: list[dict]) -> Optional[str]:
     if len(candles) < LONG_PERIOD + 1:
         return None
@@ -137,6 +212,7 @@ def detect_latest_sma_cross(candles: list[dict]) -> Optional[str]:
     short_sma = calculate_sma(candles, SHORT_PERIOD)
     long_sma = calculate_sma(candles, LONG_PERIOD)
     rsi_values = calculate_rsi(candles)
+    macd_line, macd_signal, macd_histogram = calculate_macd(candles)
 
     i = len(candles) - 1
     prev_i = i - 1
@@ -161,13 +237,53 @@ def detect_latest_sma_cross(candles: list[dict]) -> Optional[str]:
     if curr_rsi is None:
         return None
 
+    curr_macd = macd_line[i]
+    curr_macd_signal = macd_signal[i]
+    curr_macd_histogram = macd_histogram[i]
+
+    if USE_MACD_FILTER and (
+        curr_macd is None
+        or curr_macd_signal is None
+        or curr_macd_histogram is None
+    ):
+        return None
+
     prev_diff = prev_short - prev_long
     curr_diff = curr_short - curr_long
 
-    if prev_diff <= 0 and curr_diff > 0 and curr_rsi > RSI_BUY_THRESHOLD:
+    macd_buy_ok = (
+        not USE_MACD_FILTER
+        or (
+            curr_macd is not None
+            and curr_macd_signal is not None
+            and curr_macd_histogram is not None
+            and curr_macd > curr_macd_signal
+            and curr_macd_histogram > 0
+        )
+    )
+
+    macd_sell_ok = (
+        USE_MACD_FILTER
+        and curr_macd is not None
+        and curr_macd_signal is not None
+        and curr_macd_histogram is not None
+        and curr_macd < curr_macd_signal
+        and curr_macd_histogram < 0
+    )
+
+    if (
+        prev_diff <= 0
+        and curr_diff > 0
+        and curr_rsi > RSI_BUY_THRESHOLD
+        and macd_buy_ok
+    ):
         return "BUY"
 
-    if (prev_diff >= 0 and curr_diff < 0) or curr_rsi < RSI_SELL_THRESHOLD:
+    if (
+        (prev_diff >= 0 and curr_diff < 0)
+        or curr_rsi < RSI_SELL_THRESHOLD
+        or macd_sell_ok
+    ):
         return "SELL"
 
     return None
@@ -195,6 +311,10 @@ def save_signal(
                 "rsi_period": RSI_PERIOD,
                 "rsi_buy_threshold": RSI_BUY_THRESHOLD,
                 "rsi_sell_threshold": RSI_SELL_THRESHOLD,
+                "macd_fast_period": MACD_FAST_PERIOD,
+                "macd_slow_period": MACD_SLOW_PERIOD,
+                "macd_signal_period": MACD_SIGNAL_PERIOD,
+                "use_macd_filter": USE_MACD_FILTER,
                 "timeframe": TIMEFRAME,
                 "source": SOURCE,
                 "take_profit_rate": TAKE_PROFIT_RATE,
@@ -270,10 +390,32 @@ def get_tp_sl_exit_signal(position: dict, candle: dict) -> Optional[str]:
 
 
 def create_portfolio_snapshot(
+    market_id: str,
     cash_balance: float,
-    asset_value: float,
+    price: Optional[float] = None,
+    asset_value: Optional[float] = None,
     used_margin: float = 0.0,
 ) -> None:
+    """
+    Create a portfolio snapshot.
+
+    If a long position is open, asset_value is recalculated from the open
+    position and the latest price. This prevents abnormal snapshots where
+    cash is reduced after BUY but asset_value is accidentally recorded as 0.
+    """
+    position = get_open_position(market_id)
+
+    if position:
+        qty = to_float(position["qty"])
+        current_price = price
+
+        if current_price is None:
+            current_price = to_float(position.get("current_price") or position["entry_price"])
+
+        asset_value = qty * current_price
+    elif asset_value is None:
+        asset_value = 0.0
+
     total_equity = cash_balance + asset_value
 
     supabase.table("portfolio_snapshots").insert(
@@ -355,7 +497,9 @@ def execute_buy(market_id: str, candle: dict) -> None:
     ).execute()
 
     create_portfolio_snapshot(
+        market_id=market_id,
         cash_balance=new_cash,
+        price=price,
         asset_value=asset_value,
         used_margin=0.0,
     )
@@ -419,7 +563,9 @@ def execute_sell(market_id: str, candle: dict, reason: str = "SMA_CROSS_SELL") -
     ).eq("id", position["id"]).execute()
 
     create_portfolio_snapshot(
+        market_id=market_id,
         cash_balance=new_cash,
+        price=price,
         asset_value=0.0,
         used_margin=0.0,
     )
@@ -437,9 +583,14 @@ def update_mark_to_market(market_id: str, candle: dict) -> None:
     cash_balance = to_float(portfolio["cash_balance"])
     price = to_float(candle["close"])
 
+    # If the latest snapshot was abnormal, e.g. cash after BUY but asset_value=0,
+    # rebuild asset_value from the actual open position below.
+
     if not position:
         create_portfolio_snapshot(
+            market_id=market_id,
             cash_balance=cash_balance,
+            price=price,
             asset_value=0.0,
             used_margin=0.0,
         )
@@ -460,7 +611,9 @@ def update_mark_to_market(market_id: str, candle: dict) -> None:
     ).eq("id", position["id"]).execute()
 
     create_portfolio_snapshot(
+        market_id=market_id,
         cash_balance=cash_balance,
+        price=price,
         asset_value=asset_value,
         used_margin=0.0,
     )

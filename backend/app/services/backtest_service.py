@@ -20,6 +20,11 @@ RSI_SELL_THRESHOLD = 45.0
 
 TRADE_NOTIONAL = 1_000.0
 
+MACD_FAST_PERIOD = 12
+MACD_SLOW_PERIOD = 26
+MACD_SIGNAL_PERIOD = 9
+USE_MACD_FILTER = True
+
 
 def source_for_timeframe(timeframe: str) -> str:
     if timeframe == "1m":
@@ -148,6 +153,68 @@ def calculate_rsi(candles: list[dict], period: int = RSI_PERIOD) -> list[Optiona
 
     return values
 
+def calculate_ema(values: list[float], period: int) -> list[Optional[float]]:
+    result: list[Optional[float]] = [None] * len(values)
+
+    if len(values) < period:
+        return result
+
+    multiplier = 2 / (period + 1)
+    sma = sum(values[:period]) / period
+    result[period - 1] = sma
+
+    prev_ema = sma
+
+    for i in range(period, len(values)):
+        ema = (values[i] - prev_ema) * multiplier + prev_ema
+        result[i] = ema
+        prev_ema = ema
+
+    return result
+
+
+def calculate_macd(
+    candles: list[dict],
+    fast_period: int = MACD_FAST_PERIOD,
+    slow_period: int = MACD_SLOW_PERIOD,
+    signal_period: int = MACD_SIGNAL_PERIOD,
+) -> tuple[list[Optional[float]], list[Optional[float]], list[Optional[float]]]:
+    closes = [to_float(candle["close"]) for candle in candles]
+
+    fast_ema = calculate_ema(closes, fast_period)
+    slow_ema = calculate_ema(closes, slow_period)
+
+    macd_line: list[Optional[float]] = [None] * len(candles)
+
+    for i in range(len(candles)):
+        if fast_ema[i] is None or slow_ema[i] is None:
+            continue
+
+        macd_line[i] = fast_ema[i] - slow_ema[i]
+
+    signal_values = [value for value in macd_line if value is not None]
+    signal_ema_compact = calculate_ema(signal_values, signal_period)
+
+    signal_line: list[Optional[float]] = [None] * len(candles)
+    compact_index = 0
+
+    for i in range(len(candles)):
+        if macd_line[i] is None:
+            continue
+
+        signal_line[i] = signal_ema_compact[compact_index]
+        compact_index += 1
+
+    histogram: list[Optional[float]] = [None] * len(candles)
+
+    for i in range(len(candles)):
+        if macd_line[i] is None or signal_line[i] is None:
+            continue
+
+        histogram[i] = macd_line[i] - signal_line[i]
+
+    return macd_line, signal_line, histogram
+
 
 def is_continuous(prev_candle: dict, curr_candle: dict, timeframe: str) -> bool:
     prev_time = datetime.fromisoformat(prev_candle["open_time"].replace("Z", "+00:00"))
@@ -261,6 +328,7 @@ def evaluate_sma_cross_backtest_with_candles(
     short_sma = calculate_sma(candles, short_period)
     long_sma = calculate_sma(candles, long_period)
     rsi_values = calculate_rsi(candles)
+    macd_line, macd_signal, macd_histogram = calculate_macd(candles)
 
     cash = INITIAL_CASH
     position_qty = 0.0
@@ -317,18 +385,52 @@ def evaluate_sma_cross_backtest_with_candles(
 
         if curr_rsi is None:
             continue
+        
+        curr_macd = macd_line[i]
+        curr_macd_signal = macd_signal[i]
+        curr_macd_histogram = macd_histogram[i]
+
+        if USE_MACD_FILTER and (
+            curr_macd is None
+            or curr_macd_signal is None
+            or curr_macd_histogram is None
+        ):
+            continue
 
         prev_diff = prev_short - prev_long
         curr_diff = curr_short - curr_long
+
+        macd_buy_ok = (
+            not USE_MACD_FILTER
+            or (
+                curr_macd is not None
+                and curr_macd_signal is not None
+                and curr_macd_histogram is not None
+                and curr_macd > curr_macd_signal
+                and curr_macd_histogram > 0
+            )
+        )
+
+        macd_sell_ok = (
+            USE_MACD_FILTER
+            and curr_macd is not None
+            and curr_macd_signal is not None
+            and curr_macd_histogram is not None
+            and curr_macd < curr_macd_signal
+            and curr_macd_histogram < 0
+        )
 
         buy_signal = (
             prev_diff <= 0
             and curr_diff > 0
             and curr_rsi > rsi_buy_threshold
+            and macd_buy_ok
         )
+
         sell_signal = (
             (prev_diff >= 0 and curr_diff < 0)
             or curr_rsi < rsi_sell_threshold
+            or macd_sell_ok
         )
 
         if buy_signal and position_qty == 0:

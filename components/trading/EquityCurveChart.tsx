@@ -52,6 +52,12 @@ function removeSpikeDownPoints(
   });
 }
 
+function formatRatio(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return "-";
+
+  return value.toFixed(2);
+}
+
 export default function EquityCurveChart({ snapshots = [] }: Props) {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -85,11 +91,12 @@ export default function EquityCurveChart({ snapshots = [] }: Props) {
 
   const equityStats = useMemo(() => {
     if (equityPoints.length === 0) {
-      return {
-        currentEquity: null,
-        peakEquity: null,
-        maxDrawdown: null,
-      };
+    return {
+      currentEquity: null,
+      peakEquity: null,
+      maxDrawdown: null,
+      sharpeRatio: null,
+    };
     }
 
     let peak = equityPoints[0].value;
@@ -106,10 +113,38 @@ export default function EquityCurveChart({ snapshots = [] }: Props) {
       }
     }
 
+    const returns: number[] = [];
+
+    for (let i = 1; i < equityPoints.length; i++) {
+      const prev = equityPoints[i - 1].value;
+      const curr = equityPoints[i].value;
+
+      if (prev > 0) {
+        returns.push((curr - prev) / prev);
+      }
+    }
+
+    const meanReturn =
+      returns.length > 0
+        ? returns.reduce((sum, value) => sum + value, 0) / returns.length
+        : 0;
+
+    const variance =
+      returns.length > 1
+        ? returns.reduce((sum, value) => sum + (value - meanReturn) ** 2, 0) /
+          (returns.length - 1)
+        : 0;
+
+    const stdReturn = Math.sqrt(variance);
+
+    const sharpeRatio =
+      stdReturn > 0 ? (meanReturn / stdReturn) * Math.sqrt(returns.length) : null;
+
     return {
       currentEquity: equityPoints[equityPoints.length - 1].value,
       peakEquity: peak,
       maxDrawdown,
+      sharpeRatio,
     };
   }, [equityPoints]);
 
@@ -176,7 +211,7 @@ export default function EquityCurveChart({ snapshots = [] }: Props) {
         </p>
       </div>
 
-      <div className="mb-4 grid gap-3 md:grid-cols-3">
+      <div className="mb-4 grid gap-3 md:grid-cols-4">
         <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
           <p className="text-xs text-slate-500">Current Equity</p>
           <p className="mt-1 text-lg font-semibold text-white">
@@ -195,6 +230,13 @@ export default function EquityCurveChart({ snapshots = [] }: Props) {
           <p className="text-xs text-slate-500">Max Drawdown</p>
           <p className="mt-1 text-lg font-semibold text-red-400">
             -{formatPercent(equityStats.maxDrawdown)}
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
+          <p className="text-xs text-slate-500">Sharpe Ratio</p>
+          <p className="mt-1 text-lg font-semibold text-white">
+            {formatRatio(equityStats.sharpeRatio)}
           </p>
         </div>
       </div>
