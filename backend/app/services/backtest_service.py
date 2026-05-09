@@ -14,6 +14,10 @@ from app.services.paper_trade_service import (
 TAKE_PROFIT_RATE = 0.01  # +1.0%
 STOP_LOSS_RATE = 0.005  # -0.5%
 
+RSI_PERIOD = 14
+RSI_BUY_THRESHOLD = 55.0
+RSI_SELL_THRESHOLD = 45.0
+
 TRADE_NOTIONAL = 1_000.0
 
 
@@ -103,6 +107,46 @@ def calculate_sma(candles: list[dict], period: int) -> list[Optional[float]]:
         values.append(avg)
 
     return values
+ 
+
+def calculate_rsi(candles: list[dict], period: int = RSI_PERIOD) -> list[Optional[float]]:
+    values: list[Optional[float]] = [None] * len(candles)
+
+    if len(candles) <= period:
+        return values
+
+    gains: list[float] = []
+    losses: list[float] = []
+
+    for i in range(1, period + 1):
+        change = to_float(candles[i]["close"]) - to_float(candles[i - 1]["close"])
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
+    if avg_loss == 0:
+        values[period] = 100.0
+    else:
+        rs = avg_gain / avg_loss
+        values[period] = 100.0 - (100.0 / (1.0 + rs))
+
+    for i in range(period + 1, len(candles)):
+        change = to_float(candles[i]["close"]) - to_float(candles[i - 1]["close"])
+        gain = max(change, 0.0)
+        loss = max(-change, 0.0)
+
+        avg_gain = ((avg_gain * (period - 1)) + gain) / period
+        avg_loss = ((avg_loss * (period - 1)) + loss) / period
+
+        if avg_loss == 0:
+            values[i] = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            values[i] = 100.0 - (100.0 / (1.0 + rs))
+
+    return values
 
 
 def is_continuous(prev_candle: dict, curr_candle: dict, timeframe: str) -> bool:
@@ -155,6 +199,7 @@ def run_sma_cross_backtest(
 
     short_sma = calculate_sma(candles, short_period)
     long_sma = calculate_sma(candles, long_period)
+    rsi_values = calculate_rsi(candles)
 
     cash = INITIAL_CASH
     position_qty = 0.0
@@ -221,11 +266,23 @@ def run_sma_cross_backtest(
         if None in (prev_short, prev_long, curr_short, curr_long):
             continue
 
+        curr_rsi = rsi_values[i]
+
+        if curr_rsi is None:
+            continue
+
         prev_diff = prev_short - prev_long
         curr_diff = curr_short - curr_long
 
-        buy_signal = prev_diff <= 0 and curr_diff > 0
-        sell_signal = prev_diff >= 0 and curr_diff < 0
+        buy_signal = (
+            prev_diff <= 0
+            and curr_diff > 0
+            and curr_rsi > RSI_BUY_THRESHOLD
+        )
+        sell_signal = (
+            (prev_diff >= 0 and curr_diff < 0)
+            or curr_rsi < RSI_SELL_THRESHOLD
+        )
 
         if buy_signal and position_qty == 0:
             fee = TRADE_NOTIONAL * FEE_RATE
@@ -320,6 +377,7 @@ def run_sma_cross_backtest(
     print(f"Symbol: {EXCHANGE} {SYMBOL} {MARKET_TYPE} {timeframe}")
     print(f"Candles: {len(candles)}")
     print(f"TP/SL: +{take_profit_rate * 100:.2f}% / -{stop_loss_rate * 100:.2f}%")
+    print(f"RSI: period={RSI_PERIOD}, buy>{RSI_BUY_THRESHOLD}, sell<{RSI_SELL_THRESHOLD}")
     print(f"Initial cash: {INITIAL_CASH:.2f} USDT")
     print(f"Final equity: {final_equity:.2f} USDT")
     print(f"Total return: {total_return:.2f}%")
@@ -379,6 +437,7 @@ def evaluate_sma_cross_backtest(
 
     short_sma = calculate_sma(candles, short_period)
     long_sma = calculate_sma(candles, long_period)
+    rsi_values = calculate_rsi(candles)
 
     cash = INITIAL_CASH
     position_qty = 0.0
@@ -432,11 +491,23 @@ def evaluate_sma_cross_backtest(
         if None in (prev_short, prev_long, curr_short, curr_long):
             continue
 
+        curr_rsi = rsi_values[i]
+
+        if curr_rsi is None:
+            continue
+
         prev_diff = prev_short - prev_long
         curr_diff = curr_short - curr_long
 
-        buy_signal = prev_diff <= 0 and curr_diff > 0
-        sell_signal = prev_diff >= 0 and curr_diff < 0
+        buy_signal = (
+            prev_diff <= 0
+            and curr_diff > 0
+            and curr_rsi > RSI_BUY_THRESHOLD
+        )
+        sell_signal = (
+            (prev_diff >= 0 and curr_diff < 0)
+            or curr_rsi < RSI_SELL_THRESHOLD
+        )
 
         if buy_signal and position_qty == 0:
             fee = TRADE_NOTIONAL * FEE_RATE
@@ -536,6 +607,9 @@ def evaluate_sma_cross_backtest(
         "stop_loss_count": stop_loss_count,
         "take_profit_rate": take_profit_rate,
         "stop_loss_rate": stop_loss_rate,
+        "rsi_period": RSI_PERIOD,
+        "rsi_buy_threshold": RSI_BUY_THRESHOLD,
+        "rsi_sell_threshold": RSI_SELL_THRESHOLD,
     }
 
 
@@ -594,7 +668,8 @@ def print_optimization_results(results: list[dict], top_n: int = 10) -> None:
             f"win_rate={result['win_rate']:.2f}% | "
             f"TP/SL exits={result.get('take_profit_count', 0)}/{result.get('stop_loss_count', 0)} | "
             f"tp={result.get('take_profit_rate', 0) * 100:.1f}% | "
-            f"sl={result.get('stop_loss_rate', 0) * 100:.1f}%"
+            f"sl={result.get('stop_loss_rate', 0) * 100:.1f}% | "
+            f"RSI>{result.get('rsi_buy_threshold', RSI_BUY_THRESHOLD):.0f}/<{result.get('rsi_sell_threshold', RSI_SELL_THRESHOLD):.0f}"
         )
 
 def save_backtest_results(results: list[dict], top_n: int = 20) -> None:
@@ -634,6 +709,9 @@ def save_backtest_results(results: list[dict], top_n: int = 20) -> None:
                 "meta": {
                     "rank_source": "optimization",
                     "fee_rate": FEE_RATE,
+                    "rsi_period": RSI_PERIOD,
+                    "rsi_buy_threshold": RSI_BUY_THRESHOLD,
+                    "rsi_sell_threshold": RSI_SELL_THRESHOLD,
                 },
             }
         )
