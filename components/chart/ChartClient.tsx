@@ -17,7 +17,113 @@ import type {
 import EquityCurveChart from "@/components/trading/EquityCurveChart";
 import TradeHistoryTable from "@/components/trading/TradeHistoryTable";
 
+
 const POLLING_INTERVAL_MS = 30_000;
+
+type BacktestResult = {
+  id: string;
+  strategy_name: string;
+  exchange: string;
+  symbol: string;
+  market_type: string;
+  timeframe: string;
+  candle_count: number;
+  short_period: number;
+  long_period: number;
+  take_profit_rate: number;
+  stop_loss_rate: number;
+  initial_cash: number;
+  final_equity: number;
+  total_return: number;
+  realized_pnl: number;
+  buy_count: number;
+  sell_count: number;
+  win_rate: number;
+  take_profit_count: number;
+  stop_loss_count: number;
+  open_position_value: number;
+  created_at: string;
+};
+
+function formatNumber(value: number | string | null | undefined, digits = 2) {
+  if (value === null || value === undefined) return "-";
+
+  return Number(value).toLocaleString(undefined, {
+    maximumFractionDigits: digits,
+  });
+}
+
+function formatPercent(value: number | string | null | undefined, digits = 2) {
+  if (value === null || value === undefined) return "-";
+
+  return `${formatNumber(value, digits)}%`;
+}
+
+function BacktestRankingTable({ results }: { results: BacktestResult[] }) {
+  return (
+    <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-4">
+      <h2 className="mb-4 text-lg font-bold text-white">Backtest Ranking</h2>
+
+      {results.length === 0 ? (
+        <p className="text-sm text-slate-500">No backtest results yet.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-slate-800 text-slate-400">
+              <tr>
+                <th className="py-2 pr-4">Rank</th>
+                <th className="py-2 pr-4">TF</th>
+                <th className="py-2 pr-4">SMA</th>
+                <th className="py-2 pr-4">TP / SL</th>
+                <th className="py-2 pr-4">Equity</th>
+                <th className="py-2 pr-4">Return</th>
+                <th className="py-2 pr-4">PnL</th>
+                <th className="py-2 pr-4">Trades</th>
+                <th className="py-2 pr-4">Win</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((result, index) => (
+                <tr key={result.id} className="border-b border-slate-800/60">
+                  <td className="py-2 pr-4 text-slate-400">{index + 1}</td>
+                  <td className="py-2 pr-4">{result.timeframe}</td>
+                  <td className="py-2 pr-4">
+                    {result.short_period}/{result.long_period}
+                  </td>
+                  <td className="py-2 pr-4">
+                    {formatPercent(Number(result.take_profit_rate) * 100, 1)} /{" "}
+                    {formatPercent(Number(result.stop_loss_rate) * 100, 1)}
+                  </td>
+                  <td className="py-2 pr-4">
+                    {formatNumber(result.final_equity, 2)}
+                  </td>
+                  <td
+                    className={
+                      Number(result.total_return) >= 0
+                        ? "py-2 pr-4 font-medium text-emerald-400"
+                        : "py-2 pr-4 font-medium text-red-400"
+                    }
+                  >
+                    {formatPercent(result.total_return, 2)}
+                  </td>
+                  <td className="py-2 pr-4">
+                    {formatNumber(result.realized_pnl, 2)}
+                  </td>
+                  <td className="py-2 pr-4">
+                    {result.buy_count}/{result.sell_count}
+                  </td>
+                  <td className="py-2 pr-4">
+                    {formatPercent(result.win_rate, 1)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
 
 export default function ChartClient() {
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -34,6 +140,7 @@ export default function ChartClient() {
   const [portfolioSnapshots, setPortfolioSnapshots] = useState<
     PortfolioSnapshot[]
   >([]);
+  const [backtestResults, setBacktestResults] = useState<BacktestResult[]>([]);
 
   const fetchCandles = useCallback(async () => {
     const { data, error } = await supabase
@@ -60,6 +167,7 @@ export default function ChartClient() {
     setLastUpdated(new Date().toLocaleTimeString());
     setErrorMessage(null);
     setLoading(false);
+    
 
     const [
       signalRes,
@@ -68,6 +176,7 @@ export default function ChartClient() {
       orderRes,
       ordersRes,
       portfolioSnapshotsRes,
+      backtestResultsRes,
     ] = await Promise.all([
       supabase
         .from("signals")
@@ -108,6 +217,12 @@ export default function ChartClient() {
         .select("*")
         .order("snapshot_time", { ascending: false })
         .limit(200),
+
+      supabase
+        .from("backtest_results")
+        .select("*")
+        .order("final_equity", { ascending: false })
+        .limit(10),
     ]);
 
     setLatestSignal((signalRes.data ?? null) as Signal | null);
@@ -118,6 +233,7 @@ export default function ChartClient() {
     setPortfolioSnapshots(
       ((portfolioSnapshotsRes.data ?? []) as PortfolioSnapshot[]).reverse(),
     );
+    setBacktestResults((backtestResultsRes.data ?? []) as BacktestResult[]);
   }, [timeframe]);
 
   useEffect(() => {
@@ -128,6 +244,7 @@ export default function ChartClient() {
     const timer = window.setInterval(() => {
       void fetchCandles();
     }, POLLING_INTERVAL_MS);
+    
 
     return () => {
       window.clearTimeout(fetchInitialCandles);
@@ -186,6 +303,7 @@ export default function ChartClient() {
       />
       <EquityCurveChart snapshots={portfolioSnapshots} />
       <TradeHistoryTable orders={orders} />
+      <BacktestRankingTable results={backtestResults} />
     </section>
   );
 }

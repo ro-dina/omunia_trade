@@ -6,7 +6,6 @@ from app.services.paper_trade_service import (
     EXCHANGE,
     SYMBOL,
     MARKET_TYPE,
-    TRADE_NOTIONAL,
     FEE_RATE,
     INITIAL_CASH,
     to_float,
@@ -14,6 +13,8 @@ from app.services.paper_trade_service import (
 
 TAKE_PROFIT_RATE = 0.01  # +1.0%
 STOP_LOSS_RATE = 0.005  # -0.5%
+
+TRADE_NOTIONAL = 1_000.0
 
 
 def source_for_timeframe(timeframe: str) -> str:
@@ -595,3 +596,51 @@ def print_optimization_results(results: list[dict], top_n: int = 10) -> None:
             f"tp={result.get('take_profit_rate', 0) * 100:.1f}% | "
             f"sl={result.get('stop_loss_rate', 0) * 100:.1f}%"
         )
+
+def save_backtest_results(results: list[dict], top_n: int = 20) -> None:
+    rows = []
+
+    for result in results[:top_n]:
+        strategy_name = (
+            f"sma{result['short_period']}_"
+            f"sma{result['long_period']}_"
+            f"{result['timeframe']}_"
+            f"tp{result['take_profit_rate']}_"
+            f"sl{result['stop_loss_rate']}"
+        )
+
+        rows.append(
+            {
+                "strategy_name": strategy_name,
+                "exchange": EXCHANGE,
+                "symbol": SYMBOL,
+                "market_type": MARKET_TYPE,
+                "timeframe": result["timeframe"],
+                "candle_count": result["candles"],
+                "short_period": result["short_period"],
+                "long_period": result["long_period"],
+                "take_profit_rate": result["take_profit_rate"],
+                "stop_loss_rate": result["stop_loss_rate"],
+                "initial_cash": INITIAL_CASH,
+                "final_equity": result["final_equity"],
+                "total_return": result["total_return"],
+                "realized_pnl": result["realized_pnl"],
+                "buy_count": result["buy_count"],
+                "sell_count": result["sell_count"],
+                "win_rate": result["win_rate"],
+                "take_profit_count": result.get("take_profit_count", 0),
+                "stop_loss_count": result.get("stop_loss_count", 0),
+                "open_position_value": result["open_position_value"],
+                "meta": {
+                    "rank_source": "optimization",
+                    "fee_rate": FEE_RATE,
+                },
+            }
+        )
+
+    if not rows:
+        return
+
+    supabase.table("backtest_results").insert(rows).execute()
+
+    print(f"saved backtest_results: {len(rows)}")

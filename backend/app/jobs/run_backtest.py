@@ -2,6 +2,7 @@ from app.services.backtest_service import (
     optimize_sma_parameters,
     print_optimization_results,
     run_sma_cross_backtest,
+    save_backtest_results,
 )
 
 
@@ -19,6 +20,7 @@ def main() -> None:
     )
 
     print_optimization_results(results, top_n=10)
+    save_backtest_results(results, top_n=20)
 
     best = results[0]
 

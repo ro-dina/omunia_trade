@@ -3,16 +3,32 @@ from typing import Optional
 
 from app.db.supabase_client import supabase
 
+# =========================================
+# Paper strategy settings
+# =========================================
 EXCHANGE = "bybit"
 SYMBOL = "BTCUSDT"
 MARKET_TYPE = "linear"
-TIMEFRAME = "1m"
-SOURCE = "bybit-mainnet-public"
+TIMEFRAME = "5m"
+SOURCE = "bybit-mainnet-public-5m"
+
+SHORT_PERIOD = 30
+LONG_PERIOD = 150
+TIMEFRAME_SECONDS = 300
+FETCH_CANDLE_LIMIT = LONG_PERIOD + 20
+
+STRATEGY_NAME = f"sma{SHORT_PERIOD}_sma{LONG_PERIOD}_cross_{TIMEFRAME}"
+
+TAKE_PROFIT_RATE = 0.01   # +1.0%
+STOP_LOSS_RATE = 0.003    # -0.3%
 
 INITIAL_CASH = 10_000.0
-TRADE_NOTIONAL = 1_000.0
+
+# 資産の何%を1回の取引に使うか
+RISK_PER_TRADE = 0.1
+
 FEE_RATE = 0.0006  # 0.06%想定
-#FEE_RATE = 0
+# FEE_RATE = 0
 
 
 def to_float(value) -> float:
@@ -37,7 +53,7 @@ def get_market_id() -> str:
     return result.data[0]["id"]
 
 
-def fetch_recent_candles(market_id: str, limit: int = 120) -> list[dict]:
+def fetch_recent_candles(market_id: str, limit: int = FETCH_CANDLE_LIMIT) -> list[dict]:
     result = (
         supabase.table("candles")
         .select("*")
@@ -67,11 +83,11 @@ def calculate_sma(candles: list[dict], period: int) -> list[Optional[float]]:
 
 
 def detect_latest_sma_cross(candles: list[dict]) -> Optional[str]:
-    if len(candles) < 51:
+    if len(candles) < LONG_PERIOD + 1:
         return None
 
-    sma20 = calculate_sma(candles, 20)
-    sma50 = calculate_sma(candles, 50)
+    short_sma = calculate_sma(candles, SHORT_PERIOD)
+    long_sma = calculate_sma(candles, LONG_PERIOD)
 
     i = len(candles) - 1
     prev_i = i - 1
@@ -80,13 +96,13 @@ def detect_latest_sma_cross(candles: list[dict]) -> Optional[str]:
     curr_time = datetime.fromisoformat(candles[i]["open_time"].replace("Z", "+00:00"))
 
     # 欠損があるところでは判定しない
-    if (curr_time - prev_time).total_seconds() != 60:
+    if (curr_time - prev_time).total_seconds() != TIMEFRAME_SECONDS:
         return None
 
-    prev_short = sma20[prev_i]
-    prev_long = sma50[prev_i]
-    curr_short = sma20[i]
-    curr_long = sma50[i]
+    prev_short = short_sma[prev_i]
+    prev_long = long_sma[prev_i]
+    curr_short = short_sma[i]
+    curr_long = long_sma[i]
 
     if None in (prev_short, prev_long, curr_short, curr_long):
         return None
@@ -114,15 +130,18 @@ def save_signal(
     supabase.table("signals").upsert(
         {
             "market_id": market_id,
-            "strategy_name": "sma20_sma50_cross",
+            "strategy_name": STRATEGY_NAME,
             "signal_time": signal_time,
             "signal_type": signal_type,
             "price": price,
             "reason": reason,
             "meta": {
-                "short_period": 20,
-                "long_period": 50,
+                "short_period": SHORT_PERIOD,
+                "long_period": LONG_PERIOD,
+                "timeframe": TIMEFRAME,
                 "source": SOURCE,
+                "take_profit_rate": TAKE_PROFIT_RATE,
+                "stop_loss_rate": STOP_LOSS_RATE,
             },
         },
         on_conflict="market_id,strategy_name,signal_time",
@@ -177,6 +196,22 @@ def order_already_exists(order_key: str) -> bool:
     return bool(result.data)
 
 
+def get_tp_sl_exit_signal(position: dict, candle: dict) -> Optional[str]:
+    price = to_float(candle["close"])
+    entry_price = to_float(position["entry_price"])
+
+    take_profit_price = entry_price * (1 + TAKE_PROFIT_RATE)
+    stop_loss_price = entry_price * (1 - STOP_LOSS_RATE)
+
+    if price >= take_profit_price:
+        return "TAKE_PROFIT"
+
+    if price <= stop_loss_price:
+        return "STOP_LOSS"
+
+    return None
+
+
 def create_portfolio_snapshot(
     cash_balance: float,
     asset_value: float,
@@ -199,7 +234,7 @@ def create_portfolio_snapshot(
 def execute_buy(market_id: str, candle: dict) -> None:
     price = to_float(candle["close"])
     open_time = candle["open_time"]
-    order_key = f"paper-sma-cross-buy-{open_time}"
+    order_key = f"paper-{STRATEGY_NAME}-buy-{open_time}"
 
     if order_already_exists(order_key):
         print("BUY already processed.")
@@ -212,14 +247,20 @@ def execute_buy(market_id: str, candle: dict) -> None:
     portfolio = get_latest_portfolio()
     cash_balance = to_float(portfolio["cash_balance"])
 
-    fee = TRADE_NOTIONAL * FEE_RATE
-    total_cost = TRADE_NOTIONAL + fee
+    trade_notional = cash_balance * RISK_PER_TRADE
+
+    if trade_notional <= 0:
+        print("Trade notional is zero. BUY skipped.")
+        return
+
+    fee = trade_notional * FEE_RATE
+    total_cost = trade_notional + fee
 
     if cash_balance < total_cost:
         print("Not enough paper cash. BUY skipped.")
         return
 
-    qty = TRADE_NOTIONAL / price
+    qty = trade_notional / price
     new_cash = cash_balance - total_cost
     asset_value = qty * price
 
@@ -262,13 +303,16 @@ def execute_buy(market_id: str, candle: dict) -> None:
         used_margin=0.0,
     )
 
-    print(f"BUY executed: price={price}, qty={qty}, fee={fee}")
+    print(
+        f"BUY executed: price={price}, qty={qty}, "
+        f"notional={trade_notional}, fee={fee}"
+    )
 
 
-def execute_sell(market_id: str, candle: dict) -> None:
+def execute_sell(market_id: str, candle: dict, reason: str = "SMA_CROSS_SELL") -> None:
     price = to_float(candle["close"])
     open_time = candle["open_time"]
-    order_key = f"paper-sma-cross-sell-{open_time}"
+    order_key = f"paper-{STRATEGY_NAME}-sell-{reason.lower()}-{open_time}"
 
     if order_already_exists(order_key):
         print("SELL already processed.")
@@ -323,7 +367,10 @@ def execute_sell(market_id: str, candle: dict) -> None:
         used_margin=0.0,
     )
 
-    print(f"SELL executed: price={price}, qty={qty}, pnl={realized_pnl}, fee={fee}")
+    print(
+        f"SELL executed: price={price}, qty={qty}, "
+        f"pnl={realized_pnl}, fee={fee}, reason={reason}"
+    )
 
 
 def update_mark_to_market(market_id: str, candle: dict) -> None:
@@ -366,8 +413,8 @@ def run_paper_strategy() -> None:
     market_id = get_market_id()
     candles = fetch_recent_candles(market_id)
 
-    if len(candles) < 51:
-        print("Not enough candles.")
+    if len(candles) < LONG_PERIOD + 1:
+        print(f"Not enough candles. required={LONG_PERIOD + 1}, actual={len(candles)}")
         return
 
     latest_candle = candles[-1]
@@ -376,12 +423,27 @@ def run_paper_strategy() -> None:
     print("latest candle:", latest_candle["open_time"], latest_candle["close"])
     print("signal:", signal)
 
+    open_position = get_open_position(market_id)
+
+    if open_position:
+        exit_signal = get_tp_sl_exit_signal(open_position, latest_candle)
+
+        if exit_signal:
+            save_signal(
+                market_id=market_id,
+                candle=latest_candle,
+                signal_type="SELL",
+                reason=exit_signal,
+            )
+            execute_sell(market_id, latest_candle, reason=exit_signal)
+            return
+
     if signal == "BUY":
         save_signal(
             market_id=market_id,
             candle=latest_candle,
             signal_type="BUY",
-            reason="SMA20 crossed above SMA50",
+            reason=f"SMA{SHORT_PERIOD} crossed above SMA{LONG_PERIOD}",
         )
         execute_buy(market_id, latest_candle)
         return
@@ -391,9 +453,9 @@ def run_paper_strategy() -> None:
             market_id=market_id,
             candle=latest_candle,
             signal_type="SELL",
-            reason="SMA20 crossed below SMA50",
+            reason=f"SMA{SHORT_PERIOD} crossed below SMA{LONG_PERIOD}",
         )
-        execute_sell(market_id, latest_candle)
+        execute_sell(market_id, latest_candle, reason="SMA_CROSS_SELL")
         return
 
     save_signal(
