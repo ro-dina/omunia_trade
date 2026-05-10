@@ -10,7 +10,8 @@ EXCHANGE = os.getenv("TRADE_EXCHANGE", "bybit")
 SYMBOL = os.getenv("TRADE_SYMBOL", "BTCUSDT")
 MARKET_TYPE = os.getenv("TRADE_MARKET_TYPE", "linear")
 TIMEFRAME = os.getenv("TRADE_TIMEFRAME", "5m")
-LIMIT = int(os.getenv("ML_DATASET_LIMIT", "5000"))
+BATCH_SIZE = int(os.getenv("ML_DATASET_BATCH_SIZE", "1000"))
+MAX_ROWS = int(os.getenv("ML_DATASET_MAX_ROWS", "0"))
 
 OUTPUT_DIR = Path("data/ml")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -35,21 +36,43 @@ def get_market_id() -> str:
 
 
 def fetch_candles(market_id: str) -> pd.DataFrame:
-    result = (
-        supabase.table("candles")
-        .select("*")
-        .eq("market_id", market_id)
-        .order("open_time", desc=True)
-        .limit(LIMIT)
-        .execute()
-    )
+    all_rows: list[dict] = []
+    offset = 0
 
-    rows = result.data or []
+    while True:
+        end = offset + BATCH_SIZE - 1
 
-    if not rows:
+        result = (
+            supabase.table("candles")
+            .select("*")
+            .eq("market_id", market_id)
+            .order("open_time", desc=False)
+            .range(offset, end)
+            .execute()
+        )
+
+        rows = result.data or []
+
+        if not rows:
+            break
+
+        all_rows.extend(rows)
+        print(f"loaded candles: {len(all_rows)}")
+
+        if MAX_ROWS > 0 and len(all_rows) >= MAX_ROWS:
+            all_rows = all_rows[:MAX_ROWS]
+            break
+
+        if len(rows) < BATCH_SIZE:
+            break
+
+        offset += BATCH_SIZE
+
+    if not all_rows:
         raise RuntimeError("No candles found.")
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(all_rows)
+    df = df.drop_duplicates(subset=["market_id", "open_time"])
     df = df.sort_values("open_time").reset_index(drop=True)
 
     for col in ["open", "high", "low", "close", "volume"]:
@@ -102,7 +125,6 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
 def add_labels(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    
     FUTURE_STEPS = int(os.getenv("ML_FUTURE_STEPS", "3"))
     THRESHOLD = float(os.getenv("ML_THRESHOLD", "0.002"))
 
@@ -121,6 +143,7 @@ def add_labels(df: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     market_id = get_market_id()
     df = fetch_candles(market_id)
+    print(f"raw candle rows: {len(df)}")
 
     df = add_indicators(df)
     df = add_labels(df)
@@ -134,6 +157,8 @@ def main() -> None:
     print("ML dataset created")
     print(f"symbol: {SYMBOL}")
     print(f"timeframe: {TIMEFRAME}")
+    print(f"future_steps: {os.getenv('ML_FUTURE_STEPS', '3')}")
+    print(f"threshold: {os.getenv('ML_THRESHOLD', '0.002')}")
     print(f"rows: {len(df)}")
     print(f"output: {output_path}")
     print("label counts:")

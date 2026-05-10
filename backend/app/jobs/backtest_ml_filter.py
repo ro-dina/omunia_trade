@@ -6,12 +6,13 @@ import pandas as pd
 
 SYMBOL = os.getenv("TRADE_SYMBOL", "BTCUSDT")
 TIMEFRAME = os.getenv("TRADE_TIMEFRAME", "5m")
+ML_MODEL_NAME = os.getenv("ML_MODEL_NAME", "RandomForest")
 
 DATASET_PATH = Path(
     os.getenv("ML_DATASET_PATH", f"data/ml/{SYMBOL}_{TIMEFRAME}_dataset.csv")
 )
 MODEL_PATH = Path(
-    os.getenv("ML_MODEL_PATH", f"data/models/{SYMBOL}_{TIMEFRAME}_LogisticRegression.joblib")
+    os.getenv("ML_MODEL_PATH", f"data/models/{SYMBOL}_{TIMEFRAME}_{ML_MODEL_NAME}.joblib")
 )
 
 ML_PROBA_THRESHOLD = float(os.getenv("ML_PROBA_THRESHOLD", "0.50"))
@@ -250,6 +251,7 @@ def print_result(result: dict) -> None:
     print(f"TP/SL/SMA exits: {result['take_profit_count']}/{result['stop_loss_count']}/{result['sma_exit_count']}")
     print(f"ML blocked buys: {result['ml_blocked_buy_count']}")
     print(f"Win rate: {result['win_rate']:.2f}%")
+    print(f"Total trades: {len(result['trades'])}")
 
     print("Recent trades:")
     for trade in result["trades"][-10:]:
@@ -276,6 +278,7 @@ def main() -> None:
     print("===================================")
     print(f"dataset: {DATASET_PATH}")
     print(f"model: {MODEL_PATH}")
+    print(f"model_name: {ML_MODEL_NAME}")
     print(f"rows: {len(df)}")
     print(f"ml_proba_threshold: {ML_PROBA_THRESHOLD}")
     print("===================================")
