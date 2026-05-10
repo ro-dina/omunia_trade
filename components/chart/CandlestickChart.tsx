@@ -13,15 +13,48 @@ import {
   type Time,
 } from "lightweight-charts";
 
-import type { Candle } from "@/lib/types";
+import type { Candle, Order } from "@/lib/types";
 import { calculateSMA } from "@/lib/indicators";
-import { generateSmaCrossSignals } from "@/lib/signals";
 
 type Props = {
   candles: Candle[];
+  orders?: Order[];
 };
 
-export default function CandlestickChart({ candles }: Props) {
+function normalizeSide(side: string | null | undefined) {
+  return String(side ?? "").toUpperCase();
+}
+
+function getOrderTime(order: Order) {
+  return Math.floor(new Date(order.created_at).getTime() / 1000);
+}
+
+function findNearestCandleTime(orderTime: number, candleTimes: number[]) {
+  if (candleTimes.length === 0) return null;
+
+  let nearestTime = candleTimes[0];
+  let nearestDiff = Math.abs(orderTime - nearestTime);
+
+  for (const candleTime of candleTimes) {
+    const diff = Math.abs(orderTime - candleTime);
+
+    if (diff < nearestDiff) {
+      nearestTime = candleTime;
+      nearestDiff = diff;
+    }
+  }
+
+  // Allow matching to nearby 1m / 5m candles.
+  // This is needed because order.created_at is the execution time,
+  // while candle.open_time is the bar open time.
+  if (nearestDiff > 10 * 60) {
+    return null;
+  }
+
+  return nearestTime;
+}
+
+export default function CandlestickChart({ candles, orders = [] }: Props) {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -78,7 +111,9 @@ export default function CandlestickChart({ candles }: Props) {
     seriesRef.current = candlestickSeries;
     sma20Ref.current = sma20Series;
     sma50Ref.current = sma50Series;
-    markerApiRef.current = createSeriesMarkers(candlestickSeries, []);
+    markerApiRef.current = createSeriesMarkers(candlestickSeries, []) as {
+      setMarkers: (markers: SeriesMarker<Time>[]) => void;
+    };
 
     const handleResize = () => {
       if (!chartContainerRef.current) return;
@@ -100,13 +135,46 @@ export default function CandlestickChart({ candles }: Props) {
   useEffect(() => {
     if (!seriesRef.current) return;
 
-    const data = candles.map((candle) => ({
-      time: Math.floor(new Date(candle.open_time).getTime() / 1000) as Time,
-      open: Number(candle.open),
-      high: Number(candle.high),
-      low: Number(candle.low),
-      close: Number(candle.close),
-    }));
+    const dataByTime = new Map<
+      number,
+      {
+        time: Time;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+      }
+    >();
+
+    for (const candle of candles) {
+      const time = Math.floor(new Date(candle.open_time).getTime() / 1000);
+      const open = Number(candle.open);
+      const high = Number(candle.high);
+      const low = Number(candle.low);
+      const close = Number(candle.close);
+
+      if (
+        !Number.isFinite(time) ||
+        !Number.isFinite(open) ||
+        !Number.isFinite(high) ||
+        !Number.isFinite(low) ||
+        !Number.isFinite(close)
+      ) {
+        continue;
+      }
+
+      dataByTime.set(time, {
+        time: time as Time,
+        open,
+        high,
+        low,
+        close,
+      });
+    }
+
+    const data = Array.from(dataByTime.values()).sort(
+      (a, b) => Number(a.time) - Number(b.time),
+    );
 
     seriesRef.current.setData(data);
 
@@ -123,20 +191,50 @@ export default function CandlestickChart({ candles }: Props) {
     sma20Ref.current?.setData(sma20);
     sma50Ref.current?.setData(sma50);
 
-    const tradeSignals = generateSmaCrossSignals(candles, 20, 50);
+    const candleTimeList = data.map((item) => Number(item.time));
+    const markers: SeriesMarker<Time>[] = [];
 
-    const markers: SeriesMarker<Time>[] = tradeSignals.map((signal) => ({
-      time: signal.time as Time,
-      position: signal.type === "BUY" ? "belowBar" : "aboveBar",
-      color: signal.type === "BUY" ? "#22c55e" : "#ef4444",
-      shape: signal.type === "BUY" ? "arrowUp" : "arrowDown",
-      text: signal.type,
-    }));
+    for (const order of orders) {
+      if (order.status !== "filled") {
+        continue;
+      }
+
+      const orderTime = getOrderTime(order);
+      const nearestCandleTime = findNearestCandleTime(orderTime, candleTimeList);
+
+      if (nearestCandleTime === null) {
+        continue;
+      }
+
+      const time = nearestCandleTime as Time;
+      const side = normalizeSide(order.side);
+
+      if (side === "BUY") {
+        markers.push({
+          time,
+          position: "belowBar",
+          color: "#22c55e",
+          shape: "arrowUp",
+          text: "BUY",
+        });
+      }
+
+      if (side === "SELL") {
+        markers.push({
+          time,
+          position: "aboveBar",
+          color: "#ef4444",
+          shape: "arrowDown",
+          text: "SELL",
+        });
+      }
+    }
+
+    markers.sort((a, b) => Number(a.time) - Number(b.time));
 
     markerApiRef.current?.setMarkers(markers);
-
     chartRef.current?.timeScale().fitContent();
-  }, [candles]);
+  }, [candles, orders]);
 
   return <div ref={chartContainerRef} className="w-full" />;
 }

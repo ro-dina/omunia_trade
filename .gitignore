@@ -42,3 +42,5 @@ next-env.d.ts
 
 backend/.venv
 backend/venv
+
+backend/data/ml/

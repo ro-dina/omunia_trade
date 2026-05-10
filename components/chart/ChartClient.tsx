@@ -17,6 +17,8 @@ import type {
 } from "@/lib/types";
 
 const POLLING_INTERVAL_MS = 30_000;
+const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const;
+type TradeSymbol = (typeof SYMBOLS)[number];
 
 type BacktestResult = {
   id: string;
@@ -134,22 +136,40 @@ export default function ChartClient() {
   const [openPosition, setOpenPosition] = useState<Position | null>(null);
   const [latestOrder, setLatestOrder] = useState<Order | null>(null);
   const [timeframe, setTimeframe] = useState<"1m" | "5m">("1m");
+  const [symbol, setSymbol] = useState<TradeSymbol>("BTCUSDT");
   const [orders, setOrders] = useState<Order[]>([]);
   const [portfolioSnapshots, setPortfolioSnapshots] = useState<
     PortfolioSnapshot[]
   >([]);
   const [backtestResults, setBacktestResults] = useState<BacktestResult[]>([]);
+  const [signals, setSignals] = useState<Signal[]>([]);
 
   const fetchCandles = useCallback(async () => {
+    const { data: marketData, error: marketError } = await supabase
+      .from("markets")
+      .select("id")
+      .eq("exchange", "bybit")
+      .eq("symbol", symbol)
+      .eq("market_type", "linear")
+      .eq("timeframe", timeframe)
+      .limit(1)
+      .maybeSingle();
+
+    if (marketError || !marketData) {
+      setErrorMessage(
+        marketError?.message ?? `Market not found: ${symbol} ${timeframe}`,
+      );
+      setCandles([]);
+      setLoading(false);
+      return;
+    }
+
+    const marketId = marketData.id as string;
+
     const { data, error } = await supabase
       .from("candles")
       .select("*")
-      .eq(
-        "source",
-        timeframe === "1m"
-          ? "bybit-mainnet-public"
-          : "bybit-mainnet-public-5m",
-      )
+      .eq("market_id", marketId)
       .order("open_time", { ascending: false })
       .limit(300);
 
@@ -174,10 +194,12 @@ export default function ChartClient() {
       ordersRes,
       portfolioSnapshotsRes,
       backtestResultsRes,
+      signalsRes,
     ] = await Promise.all([
       supabase
         .from("signals")
         .select("*")
+        .eq("market_id", marketId)
         .order("signal_time", { ascending: false })
         .limit(1)
         .maybeSingle(),
@@ -192,6 +214,7 @@ export default function ChartClient() {
       supabase
         .from("positions")
         .select("*")
+        .eq("market_id", marketId)
         .eq("status", "open")
         .limit(1)
         .maybeSingle(),
@@ -199,6 +222,7 @@ export default function ChartClient() {
       supabase
         .from("orders")
         .select("*")
+        .eq("market_id", marketId)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
@@ -206,6 +230,7 @@ export default function ChartClient() {
       supabase
         .from("orders")
         .select("*")
+        .eq("market_id", marketId)
         .order("created_at", { ascending: false })
         .limit(20),
 
@@ -218,8 +243,17 @@ export default function ChartClient() {
       supabase
         .from("backtest_results")
         .select("*")
+        .eq("symbol", symbol)
+        .eq("timeframe", timeframe)
         .order("final_equity", { ascending: false })
         .limit(10),
+
+      supabase
+        .from("signals")
+        .select("*")
+        .eq("market_id", marketId)
+        .order("signal_time", { ascending: false })
+        .limit(100),
     ]);
 
     setLatestSignal((signalRes.data ?? null) as Signal | null);
@@ -231,7 +265,8 @@ export default function ChartClient() {
       ((portfolioSnapshotsRes.data ?? []) as PortfolioSnapshot[]).reverse(),
     );
     setBacktestResults((backtestResultsRes.data ?? []) as BacktestResult[]);
-  }, [timeframe]);
+    setSignals(((signalsRes.data ?? []) as Signal[]).reverse());
+  }, [symbol, timeframe]);
 
   useEffect(() => {
     const fetchInitialCandles = window.setTimeout(() => {
@@ -251,9 +286,27 @@ export default function ChartClient() {
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
       <div className="mb-3 flex items-center justify-between text-sm text-slate-400">
-        <span>{loading ? "Loading..." : `${candles.length} candles loaded`}</span>
+        <span>
+          {loading
+            ? "Loading..."
+            : `${symbol} ${timeframe}: ${candles.length} candles loaded`}
+        </span>
 
-        <div className="mb-4 flex gap-2">
+        <div className="mb-4 flex flex-wrap gap-2">
+          {SYMBOLS.map((item) => (
+            <button
+              key={item}
+              onClick={() => setSymbol(item)}
+              className={`rounded-lg px-3 py-1 text-sm ${
+                symbol === item
+                  ? "bg-emerald-500 text-white"
+                  : "bg-slate-800 text-slate-400"
+              }`}
+            >
+              {item.replace("USDT", "")}
+            </button>
+          ))}
+
           <button
             onClick={() => setTimeframe("1m")}
             className={`rounded-lg px-3 py-1 text-sm ${
@@ -280,11 +333,17 @@ export default function ChartClient() {
         <span>{lastUpdated ? `Last updated: ${lastUpdated}` : ""}</span>
       </div>
 
+      {candles.length === 0 && !errorMessage ? (
+        <p className="text-sm text-slate-500">
+          No candles for {symbol} {timeframe} yet.
+        </p>
+      ) : null}
+
       {errorMessage ? (
         <p className="text-red-400">Error: {errorMessage}</p>
-      ) : (
-        <CandlestickChart candles={candles} />
-      )}
+      ) : candles.length > 0 ? (
+        <CandlestickChart candles={candles} orders={orders} />
+      ) : null}
 
       <BotStatusPanel
         latestSignal={latestSignal}
