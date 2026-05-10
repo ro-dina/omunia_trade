@@ -3,6 +3,14 @@ from typing import Optional
 
 from app.db.supabase_client import supabase
 
+import os
+import requests
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 # =========================================
 # Paper strategy settings
 # =========================================
@@ -48,6 +56,19 @@ FEE_RATE = 0.0006  # 0.06%想定
 
 def to_float(value) -> float:
     return float(value)
+
+def send_discord_message(message: str) -> None:
+    if not DISCORD_WEBHOOK_URL:
+        return
+
+    try:
+        requests.post(
+            DISCORD_WEBHOOK_URL,
+            json={"content": message},
+            timeout=10,
+        )
+    except Exception as e:
+        print("Discord notification failed:", e)
 
 
 def get_market_id() -> str:
@@ -509,6 +530,14 @@ def execute_buy(market_id: str, candle: dict) -> None:
         f"notional={trade_notional}, fee={fee}"
     )
 
+    send_discord_message(
+        f"🟢 PAPER BUY\n"
+        f"Price: {price:.2f}\n"
+        f"Qty: {qty:.6f}\n"
+        f"Fee: {fee:.4f}\n"
+        f"Strategy: {STRATEGY_NAME}"
+    )
+
 
 def execute_sell(market_id: str, candle: dict, reason: str = "SMA_CROSS_SELL") -> None:
     price = to_float(candle["close"])
@@ -573,6 +602,15 @@ def execute_sell(market_id: str, candle: dict, reason: str = "SMA_CROSS_SELL") -
     print(
         f"SELL executed: price={price}, qty={qty}, "
         f"pnl={realized_pnl}, fee={fee}, reason={reason}"
+    )
+
+    send_discord_message(
+        f"🔴 PAPER SELL ({reason})\n"
+        f"Price: {price:.2f}\n"
+        f"Qty: {qty:.6f}\n"
+        f"PnL: {realized_pnl:.2f}\n"
+        f"Fee: {fee:.4f}\n"
+        f"Strategy: {STRATEGY_NAME}"
     )
 
 
