@@ -14,15 +14,17 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 # =========================================
 # Paper strategy settings
 # =========================================
-EXCHANGE = "bybit"
-SYMBOL = "BTCUSDT"
-MARKET_TYPE = "linear"
-TIMEFRAME = "5m"
-SOURCE = "bybit-mainnet-public-5m"
+EXCHANGE = os.getenv("TRADE_EXCHANGE", "bybit")
+SYMBOL = os.getenv("TRADE_SYMBOL", "BTCUSDT")
+MARKET_TYPE = os.getenv("TRADE_MARKET_TYPE", "linear")
+TIMEFRAME = os.getenv("TRADE_TIMEFRAME", "5m")
+
+DEFAULT_SOURCE = "bybit-mainnet-public" if TIMEFRAME == "1m" else f"bybit-mainnet-public-{TIMEFRAME}"
+SOURCE = os.getenv("TRADE_SOURCE", DEFAULT_SOURCE)
 
 SHORT_PERIOD = 5
 LONG_PERIOD = 30
-TIMEFRAME_SECONDS = 300
+TIMEFRAME_SECONDS = 60 if TIMEFRAME == "1m" else 300
 FETCH_CANDLE_LIMIT = LONG_PERIOD + 20
 
 
@@ -37,13 +39,14 @@ USE_MACD_FILTER = True
 
 
 STRATEGY_NAME = (
+    f"{SYMBOL.lower()}_"
     f"sma{SHORT_PERIOD}_sma{LONG_PERIOD}_cross_"
     f"rsi{int(RSI_BUY_THRESHOLD)}_{int(RSI_SELL_THRESHOLD)}_"
     f"{TIMEFRAME}"
 )
 
 TAKE_PROFIT_RATE = 0.015  # +1.5%
-STOP_LOSS_RATE = 0.003    # -0.8%
+STOP_LOSS_RATE = 0.003    # -0.3%
 
 INITIAL_CASH = 10_000.0
 
@@ -84,7 +87,9 @@ def get_market_id() -> str:
     )
 
     if not result.data:
-        raise RuntimeError("markets に BTCUSDT が見つかりません。")
+        raise RuntimeError(
+            f"markets に {SYMBOL} {TIMEFRAME} が見つかりません。"
+        )
 
     return result.data[0]["id"]
 
@@ -706,7 +711,7 @@ def run_paper_strategy() -> None:
             signal_type="SELL",
             reason=(
                 f"SMA{SHORT_PERIOD} crossed below SMA{LONG_PERIOD} "
-                f"or RSI < {RSI_SELL_THRESHOLD}"
+                f"or RSI < {RSI_SELL_THRESHOLD} or MACD bearish"
             ),
         )
         execute_sell(market_id, latest_candle, reason="SMA_CROSS_SELL")
@@ -716,7 +721,7 @@ def run_paper_strategy() -> None:
         market_id=market_id,
         candle=latest_candle,
         signal_type="HOLD",
-        reason="No SMA/RSI signal",
+        reason="No SMA/RSI/MACD signal",
     )
 
     update_mark_to_market(market_id, latest_candle)

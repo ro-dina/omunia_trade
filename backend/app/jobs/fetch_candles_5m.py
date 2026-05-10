@@ -2,15 +2,17 @@ import requests
 from datetime import datetime, timezone
 
 from app.db.supabase_client import supabase
+import os
 
 BYBIT_URL = "https://api.bybit.com/v5/market/kline"
 
-EXCHANGE = "bybit"
-SYMBOL = "BTCUSDT"
-MARKET_TYPE = "linear"
-TIMEFRAME = "5m"
-SOURCE = "bybit-mainnet-public-5m"
+EXCHANGE = os.getenv("TRADE_EXCHANGE", "bybit")
+SYMBOL = os.getenv("TRADE_SYMBOL", "BTCUSDT")
+MARKET_TYPE = os.getenv("TRADE_MARKET_TYPE", "linear")
+TIMEFRAME = os.getenv("TRADE_TIMEFRAME", "5m")
 
+DEFAULT_SOURCE = "bybit-mainnet-public" if TIMEFRAME == "1m" else f"bybit-mainnet-public-{TIMEFRAME}"
+SOURCE = os.getenv("TRADE_SOURCE", DEFAULT_SOURCE)
 
 def get_market_id() -> str:
     result = (
@@ -25,16 +27,20 @@ def get_market_id() -> str:
     )
 
     if not result.data:
-        raise RuntimeError("markets に BTCUSDT 5m が見つかりません。")
+        raise RuntimeError(
+            f"markets に {SYMBOL} {TIMEFRAME} が見つかりません。"
+        )
 
     return result.data[0]["id"]
 
 
 def fetch_bybit_klines(limit: int = 2) -> list[list[str]]:
+    interval = "1" if TIMEFRAME == "1m" else "5"
+
     params = {
         "category": MARKET_TYPE,
         "symbol": SYMBOL,
-        "interval": "5",
+        "interval": interval,
         "limit": limit,
     }
 
@@ -84,14 +90,14 @@ def save_candles(rows: list[dict]) -> list[dict]:
 def main() -> None:
     market_id = get_market_id()
 
-    # 最新足は形成中なので、1つ前の確定5分足を保存する
+    # 最新足は形成中なので、1つ前の確定足を保存する
     klines = fetch_bybit_klines(limit=2)
     confirmed_klines = [klines[1]]
 
     rows = convert_to_candle_rows(market_id, confirmed_klines)
     saved = save_candles(rows)
 
-    print(f"saved 5m candles: {len(saved)}")
+    print(f"saved {TIMEFRAME} candles ({SYMBOL}): {len(saved)}")
 
     for row in saved:
         print(row["open_time"], row["close"], "volume:", row["volume"])
