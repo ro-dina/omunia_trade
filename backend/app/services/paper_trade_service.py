@@ -1,12 +1,15 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
-from app.db.supabase_client import supabase
-
+import joblib
+import math
 import os
+import pandas as pd
 import requests
-
 from dotenv import load_dotenv
+
+from app.db.supabase_client import supabase
 
 load_dotenv()
 
@@ -25,7 +28,7 @@ SOURCE = os.getenv("TRADE_SOURCE", DEFAULT_SOURCE)
 SHORT_PERIOD = 5
 LONG_PERIOD = 30
 TIMEFRAME_SECONDS = 60 if TIMEFRAME == "1m" else 300
-FETCH_CANDLE_LIMIT = LONG_PERIOD + 20
+FETCH_CANDLE_LIMIT = max(LONG_PERIOD + 20, 80)
 
 
 RSI_PERIOD = 14
@@ -38,15 +41,27 @@ MACD_SIGNAL_PERIOD = 9
 USE_MACD_FILTER = True
 
 
+TAKE_PROFIT_RATE = float(os.getenv("TAKE_PROFIT_RATE", "0.010"))  # +1.0%
+STOP_LOSS_RATE = float(os.getenv("STOP_LOSS_RATE", "0.008"))      # -0.8%
+
+USE_ML_FILTER = os.getenv("USE_ML_FILTER", "true").lower() == "true"
+ML_MODEL_NAME = os.getenv("ML_MODEL_NAME", "RandomForest")
+ML_MODEL_PATH = Path(
+    os.getenv(
+        "ML_MODEL_PATH",
+        f"data/models/{SYMBOL}_{TIMEFRAME}_{ML_MODEL_NAME}.joblib",
+    )
+)
+ML_PROBA_THRESHOLD = float(os.getenv("ML_PROBA_THRESHOLD", "0.60"))
+_ml_model_bundle: Optional[dict] = None
+
 STRATEGY_NAME = (
     f"{SYMBOL.lower()}_"
     f"sma{SHORT_PERIOD}_sma{LONG_PERIOD}_cross_"
     f"rsi{int(RSI_BUY_THRESHOLD)}_{int(RSI_SELL_THRESHOLD)}_"
-    f"{TIMEFRAME}"
+    f"{TIMEFRAME}_"
+    f"ml{int(ML_PROBA_THRESHOLD * 100) if USE_ML_FILTER else 0}"
 )
-
-TAKE_PROFIT_RATE = 0.015  # +1.5%
-STOP_LOSS_RATE = 0.003    # -0.3%
 
 INITIAL_CASH = 10_000.0
 
@@ -231,6 +246,110 @@ def calculate_macd(
     return macd_line, signal_line, histogram
 
 
+# ===================== ML Model Integration =======================
+
+def load_ml_model_bundle() -> Optional[dict]:
+    global _ml_model_bundle
+
+    if not USE_ML_FILTER:
+        return None
+
+    if _ml_model_bundle is not None:
+        return _ml_model_bundle
+
+    if not ML_MODEL_PATH.exists():
+        print(f"ML model not found: {ML_MODEL_PATH}")
+        return None
+
+    _ml_model_bundle = joblib.load(ML_MODEL_PATH)
+    return _ml_model_bundle
+
+
+def get_positive_class_index(model, positive_label: int = 1) -> int:
+    if hasattr(model, "classes_"):
+        classes = list(model.classes_)
+    elif hasattr(model, "named_steps") and "model" in model.named_steps:
+        classes = list(model.named_steps["model"].classes_)
+    else:
+        raise RuntimeError("Could not read model classes.")
+
+    if positive_label not in classes:
+        raise RuntimeError(
+            f"Positive label {positive_label} not found in classes: {classes}"
+        )
+
+    return classes.index(positive_label)
+
+
+def calculate_latest_ml_features(candles: list[dict]) -> Optional[dict]:
+    if len(candles) < 50:
+        return None
+
+    closes = [to_float(candle["close"]) for candle in candles]
+    latest = candles[-1]
+    prev = candles[-2]
+
+    close = to_float(latest["close"])
+    prev_close = to_float(prev["close"])
+    open_price = to_float(latest["open"])
+    high = to_float(latest["high"])
+    low = to_float(latest["low"])
+    volume = to_float(latest["volume"])
+
+    if close <= 0 or prev_close <= 0 or open_price <= 0:
+        return None
+
+    sma_5 = sum(closes[-5:]) / 5
+    sma_10 = sum(closes[-10:]) / 10
+    sma_30 = sum(closes[-30:]) / 30
+
+    rsi_values = calculate_rsi(candles)
+    macd_line, macd_signal, macd_histogram = calculate_macd(candles)
+
+    rsi_14 = rsi_values[-1]
+    macd = macd_line[-1]
+    macd_sig = macd_signal[-1]
+    macd_hist = macd_histogram[-1]
+
+    if None in (rsi_14, macd, macd_sig, macd_hist):
+        return None
+
+    return {
+        "return_1": (close - prev_close) / prev_close,
+        "log_return_1": math.log(close) - math.log(prev_close),
+        "sma_5_gap": (close - sma_5) / close,
+        "sma_10_gap": (close - sma_10) / close,
+        "sma_30_gap": (close - sma_30) / close,
+        "rsi_14": rsi_14,
+        "macd": macd,
+        "macd_signal": macd_sig,
+        "macd_hist": macd_hist,
+        "high_low_range": (high - low) / close,
+        "open_close_range": (close - open_price) / open_price,
+        "volume": volume,
+    }
+
+
+def predict_ml_buy_probability(candles: list[dict]) -> Optional[float]:
+    bundle = load_ml_model_bundle()
+
+    if bundle is None:
+        return None
+
+    model = bundle["model"]
+    feature_columns = bundle["feature_columns"]
+    features = calculate_latest_ml_features(candles)
+
+    if features is None:
+        return None
+
+    row = pd.DataFrame([{column: features[column] for column in feature_columns}])
+    positive_index = get_positive_class_index(model, positive_label=1)
+    proba = model.predict_proba(row)[0][positive_index]
+
+    return float(proba)
+
+
 def detect_latest_sma_cross(candles: list[dict]) -> Optional[str]:
     if len(candles) < LONG_PERIOD + 1:
         return None
@@ -345,6 +464,10 @@ def save_signal(
                 "source": SOURCE,
                 "take_profit_rate": TAKE_PROFIT_RATE,
                 "stop_loss_rate": STOP_LOSS_RATE,
+                "use_ml_filter": USE_ML_FILTER,
+                "ml_model_name": ML_MODEL_NAME,
+                "ml_model_path": str(ML_MODEL_PATH),
+                "ml_proba_threshold": ML_PROBA_THRESHOLD,
             },
         },
         on_conflict="market_id,strategy_name,signal_time",
@@ -540,6 +663,8 @@ def execute_buy(market_id: str, candle: dict) -> None:
         f"Price: {price:.2f}\n"
         f"Qty: {qty:.6f}\n"
         f"Fee: {fee:.4f}\n"
+        f"TP: {TAKE_PROFIT_RATE * 100:.1f}% / SL: {STOP_LOSS_RATE * 100:.1f}%\n"
+        f"ML: {USE_ML_FILTER} threshold={ML_PROBA_THRESHOLD:.2f}\n"
         f"Strategy: {STRATEGY_NAME}"
     )
 
@@ -672,9 +797,11 @@ def run_paper_strategy() -> None:
 
     latest_candle = candles[-1]
     signal = detect_latest_sma_cross(candles)
+    ml_buy_probability = predict_ml_buy_probability(candles)
 
     print("latest candle:", latest_candle["open_time"], latest_candle["close"])
     print("signal:", signal)
+    print("ml_buy_probability:", ml_buy_probability)
 
     open_position = get_open_position(market_id)
 
@@ -692,13 +819,43 @@ def run_paper_strategy() -> None:
             return
 
     if signal == "BUY":
+        if USE_ML_FILTER:
+            if ml_buy_probability is None:
+                save_signal(
+                    market_id=market_id,
+                    candle=latest_candle,
+                    signal_type="HOLD",
+                    reason="BUY blocked because ML probability is unavailable",
+                )
+                update_mark_to_market(market_id, latest_candle)
+                print("BUY blocked: ML probability is unavailable.")
+                return
+
+            if ml_buy_probability < ML_PROBA_THRESHOLD:
+                save_signal(
+                    market_id=market_id,
+                    candle=latest_candle,
+                    signal_type="HOLD",
+                    reason=(
+                        f"BUY blocked by ML filter: "
+                        f"proba={ml_buy_probability:.4f} < {ML_PROBA_THRESHOLD:.4f}"
+                    ),
+                )
+                update_mark_to_market(market_id, latest_candle)
+                print(
+                    f"BUY blocked by ML filter: "
+                    f"proba={ml_buy_probability:.4f} < {ML_PROBA_THRESHOLD:.4f}"
+                )
+                return
+
         save_signal(
             market_id=market_id,
             candle=latest_candle,
             signal_type="BUY",
             reason=(
                 f"SMA{SHORT_PERIOD} crossed above SMA{LONG_PERIOD} "
-                f"and RSI > {RSI_BUY_THRESHOLD}"
+                f"and RSI > {RSI_BUY_THRESHOLD} "
+                f"and ML proba={ml_buy_probability}"
             ),
         )
         execute_buy(market_id, latest_candle)

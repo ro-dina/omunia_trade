@@ -25,8 +25,8 @@ SHORT_PERIOD = 5
 LONG_PERIOD = 30
 RSI_BUY_THRESHOLD = 60.0
 RSI_SELL_THRESHOLD = 35.0
-TAKE_PROFIT_RATE = 0.015
-STOP_LOSS_RATE = 0.003
+TAKE_PROFIT_RATE = float(os.getenv("TAKE_PROFIT_RATE", "0.015"))
+STOP_LOSS_RATE = float(os.getenv("STOP_LOSS_RATE", "0.003"))
 
 
 def load_model_bundle():
@@ -281,6 +281,8 @@ def main() -> None:
     print(f"model_name: {ML_MODEL_NAME}")
     print(f"rows: {len(df)}")
     print(f"ml_proba_threshold: {ML_PROBA_THRESHOLD}")
+    print(f"take_profit_rate: {TAKE_PROFIT_RATE}")
+    print(f"stop_loss_rate: {STOP_LOSS_RATE}")
     print("===================================")
 
     base_result = run_backtest(df, use_ml_filter=False)
