@@ -65,20 +65,78 @@ function getOrderPrice(order: FlexibleOrder) {
   return order.price ?? order.filled_price ?? null;
 }
 
+type OrderWithComputedPnl = FlexibleOrder & {
+  computed_pnl: number;
+};
+
+function buildOrdersWithComputedPnl(orders: FlexibleOrder[]) {
+  const buyQueue: { qty: number; price: number; fee: number }[] = [];
+
+  return orders.map((order) => {
+    const side = normalizeSide(order.side);
+    const qty = toNumber(order.qty);
+    const price = toNumber(getOrderPrice(order));
+    const fee = toNumber(order.fee);
+    let computedPnl = toNumber(order.realized_pnl);
+
+    if (order.status === "filled" && side === "BUY" && qty > 0 && price > 0) {
+      buyQueue.push({ qty, price, fee });
+    }
+
+    if (
+      order.status === "filled" &&
+      side === "SELL" &&
+      qty > 0 &&
+      price > 0 &&
+      computedPnl === 0
+    ) {
+      let remainingQty = qty;
+      let sellFeeUsed = 0;
+      let pnl = 0;
+
+      while (remainingQty > 0 && buyQueue.length > 0) {
+        const buy = buyQueue[0];
+        const matchedQty = Math.min(remainingQty, buy.qty);
+        const ratio = matchedQty / qty;
+        const buyFeeRatio = matchedQty / buy.qty;
+
+        pnl += (price - buy.price) * matchedQty;
+        pnl -= buy.fee * buyFeeRatio;
+        sellFeeUsed += fee * ratio;
+
+        buy.qty -= matchedQty;
+        remainingQty -= matchedQty;
+
+        if (buy.qty <= 1e-12) {
+          buyQueue.shift();
+        }
+      }
+
+      computedPnl = pnl - sellFeeUsed;
+    }
+
+    return {
+      ...order,
+      computed_pnl: computedPnl,
+    };
+  });
+}
+
 export default function TradeHistoryTable({ orders }: Props) {
   const flexibleOrders = orders ?? [];
+  const ordersWithPnl = buildOrdersWithComputedPnl(flexibleOrders as FlexibleOrder[]);
 
-  const realizedPnl = flexibleOrders.reduce((sum, order) => {
-    return sum + toNumber((order as FlexibleOrder).realized_pnl);
+  const realizedPnl = ordersWithPnl.reduce((sum, order) => {
+    return sum + order.computed_pnl;
   }, 0);
 
-  const totalFees = flexibleOrders.reduce((sum, order) => {
+  const totalFees = ordersWithPnl.reduce((sum, order) => {
     return sum + toNumber(order.fee);
   }, 0);
 
-  const filledOrders = flexibleOrders.filter((order) => order.status === "filled");
-  const buyCount = flexibleOrders.filter((order) => normalizeSide(order.side) === "BUY").length;
-  const sellCount = flexibleOrders.filter((order) => normalizeSide(order.side) === "SELL").length;
+  const filledOrders = ordersWithPnl.filter((order) => order.status === "filled");
+  const buyCount = ordersWithPnl.filter((order) => normalizeSide(order.side) === "BUY").length;
+  const sellCount = ordersWithPnl.filter((order) => normalizeSide(order.side) === "SELL").length;
 
   return (
     <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-4">
@@ -136,13 +194,13 @@ export default function TradeHistoryTable({ orders }: Props) {
               </tr>
             </thead>
             <tbody>
-              {flexibleOrders.map((order) => {
-                const flexibleOrder = order as FlexibleOrder;
+              {ordersWithPnl.map((order) => {
+                const flexibleOrder = order;
                 const side = normalizeSide(order.side);
                 const qty = toNumber(order.qty);
                 const price = toNumber(getOrderPrice(flexibleOrder));
                 const notional = qty * price;
-                const pnl = toNumber(flexibleOrder.realized_pnl);
+                const pnl = flexibleOrder.computed_pnl;
 
                 return (
                   <tr key={order.id} className="border-b border-slate-800/60">

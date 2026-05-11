@@ -474,9 +474,12 @@ def save_signal(
     ).execute()
 
 def get_latest_portfolio() -> dict:
+    market_id = get_market_id()
+
     result = (
         supabase.table("portfolio_snapshots")
         .select("*")
+        .eq("market_id", market_id)
         .order("snapshot_time", desc=True)
         .limit(1)
         .execute()
@@ -569,6 +572,7 @@ def create_portfolio_snapshot(
 
     supabase.table("portfolio_snapshots").insert(
         {
+            "market_id": market_id,
             "cash_balance": cash_balance,
             "asset_value": asset_value,
             "total_equity": total_equity,

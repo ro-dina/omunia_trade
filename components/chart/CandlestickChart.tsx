@@ -63,6 +63,7 @@ export default function CandlestickChart({ candles, orders = [] }: Props) {
   const markerApiRef = useRef<{
     setMarkers: (markers: SeriesMarker<Time>[]) => void;
   } | null>(null);
+  const hasFitContentRef = useRef(false);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -233,8 +234,29 @@ export default function CandlestickChart({ candles, orders = [] }: Props) {
     markers.sort((a, b) => Number(a.time) - Number(b.time));
 
     markerApiRef.current?.setMarkers(markers);
-    chartRef.current?.timeScale().fitContent();
+
+    if (!hasFitContentRef.current && data.length > 0) {
+      chartRef.current?.timeScale().fitContent();
+      hasFitContentRef.current = true;
+    }
   }, [candles, orders]);
 
-  return <div ref={chartContainerRef} className="w-full" />;
+  const handleResetZoom = () => {
+    chartRef.current?.timeScale().fitContent();
+  };
+
+  return (
+    <div className="relative">
+      <div className="mb-2 flex justify-end">
+        <button
+          type="button"
+          onClick={handleResetZoom}
+          className="rounded-lg border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800"
+        >
+          Reset zoom
+        </button>
+      </div>
+      <div ref={chartContainerRef} className="w-full" />
+    </div>
+  );
 }

@@ -62,6 +62,7 @@ export default function EquityCurveChart({ snapshots = [] }: Props) {
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const hasFitContentRef = useRef(false);
 
   const equityPoints = useMemo(() => {
     const dataByTime = new Map<number, number>();
@@ -199,16 +200,33 @@ export default function EquityCurveChart({ snapshots = [] }: Props) {
     if (!seriesRef.current) return;
 
     seriesRef.current.setData(equityPoints);
-    chartRef.current?.timeScale().fitContent();
+
+    if (!hasFitContentRef.current && equityPoints.length > 0) {
+      chartRef.current?.timeScale().fitContent();
+      hasFitContentRef.current = true;
+    }
   }, [equityPoints]);
+
+  const handleResetZoom = () => {
+    chartRef.current?.timeScale().fitContent();
+  };
 
   return (
     <section className="mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-4">
       <div className="mb-4 flex items-center justify-between gap-4">
         <h2 className="text-lg font-bold">Equity Curve</h2>
-        <p className="text-xs text-slate-500">
-          {equityPoints.length} / {snapshots.length} snapshots
-        </p>
+        <div className="flex items-center gap-3">
+          <p className="text-xs text-slate-500">
+            {equityPoints.length} / {snapshots.length} snapshots
+          </p>
+          <button
+            type="button"
+            onClick={handleResetZoom}
+            className="rounded-lg border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800"
+          >
+            Reset zoom
+          </button>
+        </div>
       </div>
 
       <div className="mb-4 grid gap-3 md:grid-cols-4">

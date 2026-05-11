@@ -45,6 +45,22 @@ type BacktestResult = {
   created_at: string;
 };
 
+type SignalMeta = {
+  take_profit_rate?: number | string;
+  stop_loss_rate?: number | string;
+  use_ml_filter?: boolean;
+  ml_model_name?: string;
+  ml_model_path?: string;
+  ml_proba_threshold?: number | string;
+  timeframe?: string;
+  source?: string;
+};
+
+type SignalWithMeta = Signal & {
+  meta?: SignalMeta | null;
+  strategy_name?: string | null;
+};
+
 function formatNumber(value: number | string | null | undefined, digits = 2) {
   if (value === null || value === undefined) return "-";
 
@@ -125,11 +141,69 @@ function BacktestRankingTable({ results }: { results: BacktestResult[] }) {
   );
 }
 
+function StrategyInfoPanel({ latestSignal }: { latestSignal: Signal | null }) {
+  const signalWithMeta = latestSignal as SignalWithMeta | null;
+  const meta = signalWithMeta?.meta ?? {};
+
+  return (
+    <section className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-bold text-white">Strategy / ML Settings</h2>
+        <span className="text-xs text-slate-500">
+          {signalWithMeta?.strategy_name ?? "No strategy yet"}
+        </span>
+      </div>
+
+      <div className="grid gap-3 text-sm md:grid-cols-4">
+        <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+          <div className="text-xs text-slate-500">TP / SL</div>
+          <div className="mt-1 font-semibold text-white">
+            {meta.take_profit_rate !== undefined
+              ? `${formatPercent(Number(meta.take_profit_rate) * 100, 1)} / ${formatPercent(
+                  Number(meta.stop_loss_rate ?? 0) * 100,
+                  1,
+                )}`
+              : "-"}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+          <div className="text-xs text-slate-500">ML Filter</div>
+          <div className="mt-1 font-semibold text-white">
+            {meta.use_ml_filter === undefined
+              ? "-"
+              : meta.use_ml_filter
+                ? "ON"
+                : "OFF"}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+          <div className="text-xs text-slate-500">ML Model</div>
+          <div className="mt-1 font-semibold text-white">
+            {meta.ml_model_name ?? "-"}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+          <div className="text-xs text-slate-500">ML Threshold</div>
+          <div className="mt-1 font-semibold text-white">
+            {meta.ml_proba_threshold !== undefined
+              ? Number(meta.ml_proba_threshold).toFixed(2)
+              : "-"}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function ChartClient() {
   const [candles, setCandles] = useState<Candle[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [portfolioSnapshotError, setPortfolioSnapshotError] = useState<string | null>(null);
   const [latestSignal, setLatestSignal] = useState<Signal | null>(null);
   const [latestPortfolio, setLatestPortfolio] =
     useState<PortfolioSnapshot | null>(null);
@@ -207,6 +281,7 @@ export default function ChartClient() {
       supabase
         .from("portfolio_snapshots")
         .select("*")
+        .or(`market_id.eq.${marketId},market_id.is.null`)
         .order("snapshot_time", { ascending: false })
         .limit(1)
         .maybeSingle(),
@@ -232,13 +307,14 @@ export default function ChartClient() {
         .select("*")
         .eq("market_id", marketId)
         .order("created_at", { ascending: false })
-        .limit(20),
+        .limit(300),
 
       supabase
         .from("portfolio_snapshots")
         .select("*")
+        .or(`market_id.eq.${marketId},market_id.is.null`)
         .order("snapshot_time", { ascending: false })
-        .limit(200),
+        .limit(300),
 
       supabase
         .from("backtest_results")
@@ -257,6 +333,13 @@ export default function ChartClient() {
     ]);
 
     setLatestSignal((signalRes.data ?? null) as Signal | null);
+    if (portfolioRes.error || portfolioSnapshotsRes.error) {
+      setPortfolioSnapshotError(
+        portfolioRes.error?.message ?? portfolioSnapshotsRes.error?.message ?? null,
+      );
+    } else {
+      setPortfolioSnapshotError(null);
+    }
     setLatestPortfolio((portfolioRes.data ?? null) as PortfolioSnapshot | null);
     setOpenPosition((positionRes.data ?? null) as Position | null);
     setLatestOrder((orderRes.data ?? null) as Order | null);
@@ -351,6 +434,12 @@ export default function ChartClient() {
         openPosition={openPosition}
         latestOrder={latestOrder}
       />
+      <StrategyInfoPanel latestSignal={latestSignal} />
+      {portfolioSnapshotError ? (
+        <p className="mt-4 rounded-xl border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-300">
+          portfolio_snapshots error: {portfolioSnapshotError}
+        </p>
+      ) : null}
       <EquityCurveChart snapshots={portfolioSnapshots ?? []} />
       <TradeHistoryTable orders={orders ?? []} />
       <BacktestRankingTable results={backtestResults} />
