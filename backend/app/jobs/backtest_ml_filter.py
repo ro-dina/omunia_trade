@@ -16,6 +16,7 @@ MODEL_PATH = Path(
 )
 
 ML_PROBA_THRESHOLD = float(os.getenv("ML_PROBA_THRESHOLD", "0.50"))
+BACKTEST_EVAL_START_RATIO = float(os.getenv("BACKTEST_EVAL_START_RATIO", "0.8"))
 
 INITIAL_CASH = 10_000.0
 TRADE_NOTIONAL = 1_000.0
@@ -82,6 +83,17 @@ def add_ml_proba(df: pd.DataFrame, model, feature_columns: list[str]) -> pd.Data
     df["ml_proba_1"] = proba
 
     return df
+
+
+def filter_evaluation_period(df: pd.DataFrame) -> pd.DataFrame:
+    if not 0 <= BACKTEST_EVAL_START_RATIO < 1:
+        raise ValueError(
+            "BACKTEST_EVAL_START_RATIO must be greater than or equal to 0 "
+            "and less than 1."
+        )
+
+    start_index = int(len(df) * BACKTEST_EVAL_START_RATIO)
+    return df.iloc[start_index:].copy().reset_index(drop=True)
 
 
 def run_backtest(df: pd.DataFrame, use_ml_filter: bool) -> dict:
@@ -272,6 +284,10 @@ def main() -> None:
     df = add_sma_cross_columns(df)
     df = add_ml_proba(df, model, feature_columns)
     df = df.dropna().reset_index(drop=True)
+    eval_df = filter_evaluation_period(df)
+
+    if eval_df.empty:
+        raise RuntimeError("Evaluation dataset is empty.")
 
     print("===================================")
     print("Backtest ML Filter")
@@ -280,13 +296,17 @@ def main() -> None:
     print(f"model: {MODEL_PATH}")
     print(f"model_name: {ML_MODEL_NAME}")
     print(f"rows: {len(df)}")
+    print(f"eval_start_ratio: {BACKTEST_EVAL_START_RATIO}")
+    print(f"eval_rows: {len(eval_df)}")
+    if "open_time" in eval_df.columns:
+        print(f"eval_range: {eval_df['open_time'].iloc[0]} -> {eval_df['open_time'].iloc[-1]}")
     print(f"ml_proba_threshold: {ML_PROBA_THRESHOLD}")
     print(f"take_profit_rate: {TAKE_PROFIT_RATE}")
     print(f"stop_loss_rate: {STOP_LOSS_RATE}")
     print("===================================")
 
-    base_result = run_backtest(df, use_ml_filter=False)
-    ml_result = run_backtest(df, use_ml_filter=True)
+    base_result = run_backtest(eval_df, use_ml_filter=False)
+    ml_result = run_backtest(eval_df, use_ml_filter=True)
 
     print_result(base_result)
     print_result(ml_result)

@@ -14,26 +14,13 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from app.services.ml_features import FEATURE_COLUMNS
+
 SYMBOL = os.getenv("TRADE_SYMBOL", "BTCUSDT")
 TIMEFRAME = os.getenv("TRADE_TIMEFRAME", "5m")
 DATASET_PATH = Path(os.getenv("ML_DATASET_PATH", f"data/ml/{SYMBOL}_{TIMEFRAME}_dataset.csv"))
 MODEL_DIR = Path("data/models")
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-FEATURE_COLUMNS = [
-    "return_1",
-    "log_return_1",
-    "sma_5_gap",
-    "sma_10_gap",
-    "sma_30_gap",
-    "rsi_14",
-    "macd",
-    "macd_signal",
-    "macd_hist",
-    "high_low_range",
-    "open_close_range",
-    "volume",
-]
 
 TARGET_COLUMN = "label"
 TRAIN_RATIO = 0.8

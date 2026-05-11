@@ -3,13 +3,12 @@ from pathlib import Path
 from typing import Optional
 
 import joblib
-import math
 import os
-import pandas as pd
 import requests
 from dotenv import load_dotenv
 
 from app.db.supabase_client import supabase
+from app.services.ml_features import build_latest_feature_row
 
 load_dotenv()
 
@@ -281,55 +280,6 @@ def get_positive_class_index(model, positive_label: int = 1) -> int:
     return classes.index(positive_label)
 
 
-def calculate_latest_ml_features(candles: list[dict]) -> Optional[dict]:
-    if len(candles) < 50:
-        return None
-
-    closes = [to_float(candle["close"]) for candle in candles]
-    latest = candles[-1]
-    prev = candles[-2]
-
-    close = to_float(latest["close"])
-    prev_close = to_float(prev["close"])
-    open_price = to_float(latest["open"])
-    high = to_float(latest["high"])
-    low = to_float(latest["low"])
-    volume = to_float(latest["volume"])
-
-    if close <= 0 or prev_close <= 0 or open_price <= 0:
-        return None
-
-    sma_5 = sum(closes[-5:]) / 5
-    sma_10 = sum(closes[-10:]) / 10
-    sma_30 = sum(closes[-30:]) / 30
-
-    rsi_values = calculate_rsi(candles)
-    macd_line, macd_signal, macd_histogram = calculate_macd(candles)
-
-    rsi_14 = rsi_values[-1]
-    macd = macd_line[-1]
-    macd_sig = macd_signal[-1]
-    macd_hist = macd_histogram[-1]
-
-    if None in (rsi_14, macd, macd_sig, macd_hist):
-        return None
-
-    return {
-        "return_1": (close - prev_close) / prev_close,
-        "log_return_1": math.log(close) - math.log(prev_close),
-        "sma_5_gap": (close - sma_5) / close,
-        "sma_10_gap": (close - sma_10) / close,
-        "sma_30_gap": (close - sma_30) / close,
-        "rsi_14": rsi_14,
-        "macd": macd,
-        "macd_signal": macd_sig,
-        "macd_hist": macd_hist,
-        "high_low_range": (high - low) / close,
-        "open_close_range": (close - open_price) / open_price,
-        "volume": volume,
-    }
-
-
 def predict_ml_buy_probability(candles: list[dict]) -> Optional[float]:
     bundle = load_ml_model_bundle()
 
@@ -338,12 +288,11 @@ def predict_ml_buy_probability(candles: list[dict]) -> Optional[float]:
 
     model = bundle["model"]
     feature_columns = bundle["feature_columns"]
-    features = calculate_latest_ml_features(candles)
+    row = build_latest_feature_row(candles, feature_columns)
 
-    if features is None:
+    if row is None:
         return None
 
-    row = pd.DataFrame([{column: features[column] for column in feature_columns}])
     positive_index = get_positive_class_index(model, positive_label=1)
     proba = model.predict_proba(row)[0][positive_index]
 
