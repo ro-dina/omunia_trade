@@ -96,7 +96,11 @@ def filter_evaluation_period(df: pd.DataFrame) -> pd.DataFrame:
     return df.iloc[start_index:].copy().reset_index(drop=True)
 
 
-def run_backtest(df: pd.DataFrame, use_ml_filter: bool) -> dict:
+def run_backtest(
+    df: pd.DataFrame,
+    use_ml_filter: bool,
+    ml_proba_threshold: float = ML_PROBA_THRESHOLD,
+) -> dict:
     cash = INITIAL_CASH
     qty = 0.0
     entry_price = 0.0
@@ -176,7 +180,7 @@ def run_backtest(df: pd.DataFrame, use_ml_filter: bool) -> dict:
             )
 
             if buy_signal:
-                if use_ml_filter and row["ml_proba_1"] < ML_PROBA_THRESHOLD:
+                if use_ml_filter and row["ml_proba_1"] < ml_proba_threshold:
                     ml_blocked_buy_count += 1
                     continue
 
