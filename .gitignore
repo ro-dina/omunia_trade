@@ -44,3 +44,22 @@ backend/.venv
 backend/venv
 
 backend/data/ml/
+
+# ML datasets
+backend/data/ml/
+
+# trained models
+backend/data/models/
+
+# raw candles
+backend/data/candles/
+
+# paper trade logs
+backend/data/paper_trades/
+
+# cache
+__pycache__/
+*.pyc
+
+# env
+.env

@@ -1,3 +1,0 @@
-symbol,timeframe,reason
-ETHUSDT,5m,Dataset not found: data/ml/ETHUSDT_5m_dataset.csv
-SOLUSDT,5m,Dataset not found: data/ml/SOLUSDT_5m_dataset.csv
