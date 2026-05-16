@@ -32,10 +32,16 @@ TEST_ROWS = int(os.getenv("WALK_FORWARD_TEST_ROWS", "1000"))
 STEP_ROWS = int(os.getenv("WALK_FORWARD_STEP_ROWS", str(TEST_ROWS)))
 MAX_FOLDS = int(os.getenv("WALK_FORWARD_MAX_FOLDS", "0"))
 STRICT_DATASETS = os.getenv("WALK_FORWARD_STRICT", "false").lower() == "true"
+SELECT_OBJECTIVE = os.getenv("WALK_FORWARD_SELECT_OBJECTIVE", "delta_pnl")
+MIN_ML_BUYS = int(os.getenv("WALK_FORWARD_MIN_ML_BUYS", "30"))
+MIN_ML_BUY_RATIO = float(os.getenv("WALK_FORWARD_MIN_ML_BUY_RATIO", "0.15"))
 
 DATA_DIR = Path(os.getenv("ML_DATA_DIR", "data/ml"))
 REPORT_DIR = Path(os.getenv("WALK_FORWARD_REPORT_DIR", "data/reports"))
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+if SELECT_OBJECTIVE not in {"delta_pnl", "ml_pnl"}:
+    raise ValueError("WALK_FORWARD_SELECT_OBJECTIVE must be delta_pnl or ml_pnl.")
 
 
 def parse_targets() -> list[ReportTarget]:
@@ -263,8 +269,41 @@ def build_summary(fold_df: pd.DataFrame) -> pd.DataFrame:
         avg_f1_1=("f1_1", "mean"),
     )
     summary["ml_pnl_better"] = summary["delta_pnl"] > 0
+    summary["ml_buy_ratio"] = summary["ml_buys"] / summary["base_buys"].where(
+        summary["base_buys"] > 0,
+        1,
+    )
+    summary["selection_eligible"] = (
+        (summary["ml_buys"] >= MIN_ML_BUYS)
+        & (summary["ml_buy_ratio"] >= MIN_ML_BUY_RATIO)
+    )
 
     return summary.sort_values(["delta_pnl", "ml_pnl"], ascending=[False, False])
+
+
+def select_thresholds(summary_df: pd.DataFrame) -> pd.DataFrame:
+    selected_rows = []
+
+    for _, group in summary_df.groupby(["symbol", "timeframe", "model_name"], as_index=False):
+        candidates = group[group["selection_eligible"]].copy()
+        used_fallback = False
+
+        if candidates.empty:
+            candidates = group.copy()
+            used_fallback = True
+
+        candidates = candidates.sort_values(
+            [SELECT_OBJECTIVE, "ml_pnl", "ml_buys"],
+            ascending=[False, False, False],
+        )
+        selected = candidates.iloc[0].copy()
+        selected["selection_objective"] = SELECT_OBJECTIVE
+        selected["selection_min_ml_buys"] = MIN_ML_BUYS
+        selected["selection_min_ml_buy_ratio"] = MIN_ML_BUY_RATIO
+        selected["selection_used_fallback"] = used_fallback
+        selected_rows.append(selected)
+
+    return pd.DataFrame(selected_rows).reset_index(drop=True)
 
 
 def main() -> None:
@@ -278,6 +317,9 @@ def main() -> None:
     print(f"targets: {', '.join(f'{t.symbol}:{t.timeframe}' for t in targets)}")
     print(f"model: {MODEL_NAME}")
     print(f"thresholds: {', '.join(f'{value:.2f}' for value in ML_PROBA_THRESHOLDS)}")
+    print(f"selection_objective: {SELECT_OBJECTIVE}")
+    print(f"selection_min_ml_buys: {MIN_ML_BUYS}")
+    print(f"selection_min_ml_buy_ratio: {MIN_ML_BUY_RATIO}")
     print(f"train_rows: {TRAIN_ROWS}")
     print(f"test_rows: {TEST_ROWS}")
     print(f"step_rows: {STEP_ROWS}")
@@ -304,12 +346,15 @@ def main() -> None:
 
     fold_df = pd.DataFrame(all_rows)
     summary_df = build_summary(fold_df)
+    selected_df = select_thresholds(summary_df)
 
     fold_path = REPORT_DIR / "walk_forward_folds.csv"
     summary_path = REPORT_DIR / "walk_forward_summary.csv"
+    selected_path = REPORT_DIR / "walk_forward_selected_thresholds.csv"
     skipped_path = REPORT_DIR / "walk_forward_skipped.csv"
     fold_df.to_csv(fold_path, index=False)
     summary_df.to_csv(summary_path, index=False)
+    selected_df.to_csv(selected_path, index=False)
 
     if skipped_targets:
         pd.DataFrame(skipped_targets).to_csv(skipped_path, index=False)
@@ -318,9 +363,14 @@ def main() -> None:
     print("Summary")
     print("===================================")
     print(summary_df.to_string(index=False))
+    print("\n===================================")
+    print("Selected Thresholds")
+    print("===================================")
+    print(selected_df.to_string(index=False))
     print("===================================")
     print(f"fold report: {fold_path}")
     print(f"summary report: {summary_path}")
+    print(f"selected thresholds: {selected_path}")
     if skipped_targets:
         print(f"skipped targets: {skipped_path}")
     print("===================================")
