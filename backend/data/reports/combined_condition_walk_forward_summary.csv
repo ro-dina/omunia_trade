@@ -1,0 +1,3 @@
+symbol,timeframe,folds,train_rows,test_rows,step_rows,selection_objective,fee_rate,initial_cash,test_trade_count,test_total_pnl,test_avg_pnl,avg_test_win_rate,avg_test_profit_factor_capped,folds_profitable,profitable_fold_rate,fold_level_profit_factor
+BTCUSDT,15m,34,5000,1000,1000,total_pnl,0.0006,10000.0,406,-318.4605925795561,-0.7843856960087588,40.10204041744289,0.9099555853237934,15,44.11764705882353,0.8601365230424024
+BTCUSDT,1h,43,5000,1000,1000,total_pnl,0.0006,10000.0,756,-1129.5910082003354,-1.494168000264994,34.37600780072017,1.1579920339187335,17,39.53488372093023,0.8335297548428957

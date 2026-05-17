@@ -1,0 +1,3 @@
+symbol,timeframe,reason
+BTCUSDT,15m,Dataset not found: data/ml/BTCUSDT_15m_dataset.csv
+BTCUSDT,1h,Dataset not found: data/ml/BTCUSDT_1h_dataset.csv

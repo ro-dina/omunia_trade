@@ -45,6 +45,7 @@ def add_ml_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["sma_5_gap"] = (df["close"] - df["sma_5"]) / df["close"]
     df["sma_10_gap"] = (df["close"] - df["sma_10"]) / df["close"]
     df["sma_30_gap"] = (df["close"] - df["sma_30"]) / df["close"]
+    df["sma_30_slope"] = (df["sma_30"] - df["sma_30"].shift(1)) / df["close"]
 
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
@@ -65,6 +66,24 @@ def add_ml_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     df["high_low_range"] = (df["high"] - df["low"]) / df["close"]
     df["open_close_range"] = (df["close"] - df["open"]) / df["open"]
+
+    prev_close = df["close"].shift(1)
+    true_range = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    df["atr_14"] = true_range.rolling(14).mean() / df["close"]
+
+    df["rolling_std_12"] = df["log_return_1"].rolling(12).std()
+    df["rolling_std_24"] = df["log_return_1"].rolling(24).std()
+
+    volume_mean_24 = df["volume"].rolling(24).mean()
+    volume_std_24 = df["volume"].rolling(24).std()
+    df["volume_zscore_24"] = (df["volume"] - volume_mean_24) / volume_std_24.replace(0, np.nan)
 
     return df
 
