@@ -32,6 +32,9 @@ SHORT_SMA = int(os.getenv("BASE_FILTER_SHORT_SMA", "5"))
 LONG_SMA = int(os.getenv("BASE_FILTER_LONG_SMA", "30"))
 RSI_BUY_THRESHOLD = float(os.getenv("BASE_FILTER_RSI_BUY_THRESHOLD", "60"))
 USE_MACD_FILTER = os.getenv("BASE_FILTER_USE_MACD_FILTER", "1") != "0"
+BASE_TP_RATE = os.getenv("BASE_FILTER_TP_RATE")
+BASE_SL_RATE = os.getenv("BASE_FILTER_SL_RATE")
+BASE_LOOKAHEAD_STEPS = os.getenv("BASE_FILTER_LOOKAHEAD_STEPS")
 REPORT_DIR = Path(os.getenv("BASE_FILTER_REPORT_DIR", "data/reports"))
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -44,6 +47,25 @@ OBJECTIVE_COLUMNS = {
 
 if SELECTION_OBJECTIVE not in OBJECTIVE_COLUMNS:
     raise ValueError(f"BASE_FILTER_SELECTION_OBJECTIVE must be one of: {sorted(OBJECTIVE_COLUMNS)}")
+
+
+def build_base_exit_param_grid() -> list[ExitParams]:
+    if BASE_TP_RATE is None and BASE_SL_RATE is None and BASE_LOOKAHEAD_STEPS is None:
+        return build_exit_param_grid()
+
+    if BASE_TP_RATE is None or BASE_SL_RATE is None or BASE_LOOKAHEAD_STEPS is None:
+        raise ValueError(
+            "BASE_FILTER_TP_RATE, BASE_FILTER_SL_RATE, and BASE_FILTER_LOOKAHEAD_STEPS "
+            "must be set together."
+        )
+
+    return [
+        ExitParams(
+            tp_rate=float(BASE_TP_RATE),
+            sl_rate=float(BASE_SL_RATE),
+            lookahead_steps=int(BASE_LOOKAHEAD_STEPS),
+        )
+    ]
 
 
 def ensure_base_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -182,7 +204,7 @@ def select_train_filter(train_df: pd.DataFrame) -> dict | None:
     best_row = None
     best_key = None
 
-    for exit_params in build_exit_param_grid():
+    for exit_params in build_base_exit_param_grid():
         exit_cache = build_exit_cache(train_df, exit_params)
         base_indices = [int(index) for index in train_df.index[base_mask]]
         base_result = simulate_entry_indices(train_df, base_indices, exit_cache)
@@ -343,13 +365,17 @@ def main() -> None:
     print("===================================")
     print(f"targets: {', '.join(f'{target.symbol}:{target.timeframe}' for target in targets)}")
     print(f"base_signal: SMA{SHORT_SMA}/SMA{LONG_SMA} cross, rsi>{RSI_BUY_THRESHOLD}, macd_filter={USE_MACD_FILTER}")
+    if BASE_TP_RATE is not None:
+        print(f"base_exit: tp/sl/lookahead={BASE_TP_RATE}/{BASE_SL_RATE}/{BASE_LOOKAHEAD_STEPS}")
+    else:
+        print("base_exit: grid search")
     print(f"train/test/step rows: {TRAIN_ROWS}/{TEST_ROWS}/{STEP_ROWS}")
     print(f"selection_objective: {SELECTION_OBJECTIVE}")
     print(f"min_base_train_trades: {MIN_BASE_TRAIN_TRADES}")
     print(f"min_filtered_train_trades: {MIN_FILTERED_TRAIN_TRADES}")
     print(f"min_train_delta_pnl: {MIN_TRAIN_DELTA_PNL}")
     print(f"min_train_filtered_profit_factor: {MIN_TRAIN_FILTERED_PROFIT_FACTOR}")
-    print(f"exit parameter sets: {len(build_exit_param_grid())}")
+    print(f"exit parameter sets: {len(build_base_exit_param_grid())}")
     print("===================================")
 
     for target in targets:

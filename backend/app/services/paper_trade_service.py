@@ -4,11 +4,12 @@ from typing import Optional
 
 import joblib
 import os
+import pandas as pd
 import requests
 from dotenv import load_dotenv
 
 from app.db.supabase_client import supabase
-from app.services.ml_features import build_latest_feature_row
+from app.services.ml_features import add_ml_indicators, build_latest_feature_row, normalize_candles_frame
 
 load_dotenv()
 
@@ -24,24 +25,48 @@ TIMEFRAME = os.getenv("TRADE_TIMEFRAME", "5m")
 DEFAULT_SOURCE = "bybit-mainnet-public" if TIMEFRAME == "1m" else f"bybit-mainnet-public-{TIMEFRAME}"
 SOURCE = os.getenv("TRADE_SOURCE", DEFAULT_SOURCE)
 
-SHORT_PERIOD = 5
-LONG_PERIOD = 30
-TIMEFRAME_SECONDS = 60 if TIMEFRAME == "1m" else 300
-FETCH_CANDLE_LIMIT = max(LONG_PERIOD + 20, 80)
+SHORT_PERIOD = int(os.getenv("BASE_FILTER_SHORT_SMA", os.getenv("SHORT_PERIOD", "5")))
+LONG_PERIOD = int(os.getenv("BASE_FILTER_LONG_SMA", os.getenv("LONG_PERIOD", "30")))
+
+
+def timeframe_seconds(timeframe: str) -> int:
+    if timeframe.endswith("m"):
+        return int(timeframe[:-1]) * 60
+
+    if timeframe.endswith("h"):
+        return int(timeframe[:-1]) * 60 * 60
+
+    if timeframe == "1d":
+        return 24 * 60 * 60
+
+    raise ValueError(f"Unsupported timeframe: {timeframe}")
+
+
+TIMEFRAME_SECONDS = timeframe_seconds(TIMEFRAME)
 
 
 RSI_PERIOD = 14
-RSI_BUY_THRESHOLD = 60.0
-RSI_SELL_THRESHOLD = 35.0
+RSI_BUY_THRESHOLD = float(os.getenv("BASE_FILTER_RSI_BUY_THRESHOLD", os.getenv("RSI_BUY_THRESHOLD", "60")))
+RSI_SELL_THRESHOLD = float(os.getenv("RSI_SELL_THRESHOLD", "35"))
 
 MACD_FAST_PERIOD = 12
 MACD_SLOW_PERIOD = 26
 MACD_SIGNAL_PERIOD = 9
-USE_MACD_FILTER = True
+USE_MACD_FILTER = os.getenv("BASE_FILTER_USE_MACD_FILTER", os.getenv("USE_MACD_FILTER", "1")) != "0"
 
 
 TAKE_PROFIT_RATE = float(os.getenv("TAKE_PROFIT_RATE", "0.010"))  # +1.0%
 STOP_LOSS_RATE = float(os.getenv("STOP_LOSS_RATE", "0.008"))      # -0.8%
+MAX_HOLD_CANDLES = int(os.getenv("MAX_HOLD_CANDLES", os.getenv("BASE_FILTER_LOOKAHEAD_STEPS", "0")))
+ENTRY_FILTER_MODE = os.getenv("ENTRY_FILTER_MODE", "off")
+ENTRY_FILTER_QUANTILE_LOOKBACK = int(os.getenv("ENTRY_FILTER_QUANTILE_LOOKBACK", "500"))
+
+FETCH_CANDLE_LIMIT = int(
+    os.getenv(
+        "FETCH_CANDLE_LIMIT",
+        str(max(LONG_PERIOD + 20, ENTRY_FILTER_QUANTILE_LOOKBACK + 50 if ENTRY_FILTER_MODE != "off" else 80)),
+    )
+)
 
 USE_ML_FILTER = os.getenv("USE_ML_FILTER", "true").lower() == "true"
 ML_MODEL_NAME = os.getenv("ML_MODEL_NAME", "RandomForest")
@@ -59,6 +84,9 @@ STRATEGY_NAME = (
     f"sma{SHORT_PERIOD}_sma{LONG_PERIOD}_cross_"
     f"rsi{int(RSI_BUY_THRESHOLD)}_{int(RSI_SELL_THRESHOLD)}_"
     f"{TIMEFRAME}_"
+    f"tp{int(TAKE_PROFIT_RATE * 1000)}_sl{int(STOP_LOSS_RATE * 1000)}_"
+    f"hold{MAX_HOLD_CANDLES}_"
+    f"filter{ENTRY_FILTER_MODE}_"
     f"ml{int(ML_PROBA_THRESHOLD * 100) if USE_ML_FILTER else 0}"
 )
 
@@ -67,7 +95,7 @@ INITIAL_CASH = 10_000.0
 # 資産の何%を1回の取引に使うか
 RISK_PER_TRADE = 0.1
 
-FEE_RATE = 0.0006  # 0.06%想定
+FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.0006"))  # 0.06%想定
 # FEE_RATE = 0
 
 
@@ -299,6 +327,41 @@ def predict_ml_buy_probability(candles: list[dict]) -> Optional[float]:
     return float(proba)
 
 
+def get_entry_filter_status(candles: list[dict]) -> tuple[bool, str]:
+    if ENTRY_FILTER_MODE == "off":
+        return True, "entry filter disabled"
+
+    if ENTRY_FILTER_MODE != "high_volatility_q75":
+        raise ValueError(f"Unsupported ENTRY_FILTER_MODE: {ENTRY_FILTER_MODE}")
+
+    min_required = max(ENTRY_FILTER_QUANTILE_LOOKBACK, 80)
+
+    if len(candles) < min_required:
+        return False, f"entry filter unavailable: candles={len(candles)} < required={min_required}"
+
+    df = normalize_candles_frame(pd.DataFrame(candles))
+    df = add_ml_indicators(df)
+    window = df.tail(ENTRY_FILTER_QUANTILE_LOOKBACK)
+    latest = window.iloc[-1]
+    required_columns = ["rolling_std_24", "atr_14"]
+
+    if latest[required_columns].isna().any():
+        return False, "entry filter unavailable: latest volatility features are NaN"
+
+    rolling_std_q75 = float(window["rolling_std_24"].quantile(0.75))
+    atr_q75 = float(window["atr_14"].quantile(0.75))
+    rolling_std = float(latest["rolling_std_24"])
+    atr = float(latest["atr_14"])
+    passed = rolling_std > rolling_std_q75 and atr > atr_q75
+    reason = (
+        "entry filter high_volatility_q75 "
+        f"rolling_std_24={rolling_std:.6f} q75={rolling_std_q75:.6f}, "
+        f"atr_14={atr:.6f} q75={atr_q75:.6f}, passed={passed}"
+    )
+
+    return passed, reason
+
+
 def detect_latest_sma_cross(candles: list[dict]) -> Optional[str]:
     if len(candles) < LONG_PERIOD + 1:
         return None
@@ -413,6 +476,10 @@ def save_signal(
                 "source": SOURCE,
                 "take_profit_rate": TAKE_PROFIT_RATE,
                 "stop_loss_rate": STOP_LOSS_RATE,
+                "max_hold_candles": MAX_HOLD_CANDLES,
+                "entry_filter_mode": ENTRY_FILTER_MODE,
+                "entry_filter_quantile_lookback": ENTRY_FILTER_QUANTILE_LOOKBACK,
+                "fee_rate": FEE_RATE,
                 "use_ml_filter": USE_ML_FILTER,
                 "ml_model_name": ML_MODEL_NAME,
                 "ml_model_path": str(ML_MODEL_PATH),
@@ -486,6 +553,26 @@ def get_tp_sl_exit_signal(position: dict, candle: dict) -> Optional[str]:
 
     if price <= stop_loss_price:
         return "STOP_LOSS"
+
+    return None
+
+
+def get_time_exit_signal(position: dict, candle: dict) -> Optional[str]:
+    if MAX_HOLD_CANDLES <= 0:
+        return None
+
+    opened_at = position.get("opened_at")
+
+    if not opened_at:
+        return None
+
+    opened_time = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+    candle_time = datetime.fromisoformat(candle["open_time"].replace("Z", "+00:00"))
+    hold_seconds = (candle_time - opened_time).total_seconds()
+    max_hold_seconds = MAX_HOLD_CANDLES * TIMEFRAME_SECONDS
+
+    if hold_seconds >= max_hold_seconds:
+        return "TIME_EXIT"
 
     return None
 
@@ -594,7 +681,7 @@ def execute_buy(market_id: str, candle: dict) -> None:
             "unrealized_pnl": 0,
             "realized_pnl": 0,
             "status": "open",
-            "opened_at": datetime.now(timezone.utc).isoformat(),
+            "opened_at": open_time,
         }
     ).execute()
 
@@ -617,6 +704,8 @@ def execute_buy(market_id: str, candle: dict) -> None:
         f"Qty: {qty:.6f}\n"
         f"Fee: {fee:.4f}\n"
         f"TP: {TAKE_PROFIT_RATE * 100:.1f}% / SL: {STOP_LOSS_RATE * 100:.1f}%\n"
+        f"Max hold: {MAX_HOLD_CANDLES} candles\n"
+        f"Entry filter: {ENTRY_FILTER_MODE}\n"
         f"ML: {USE_ML_FILTER} threshold={ML_PROBA_THRESHOLD:.2f}\n"
         f"Strategy: {STRATEGY_NAME}"
     )
@@ -761,6 +850,9 @@ def run_paper_strategy() -> None:
     if open_position:
         exit_signal = get_tp_sl_exit_signal(open_position, latest_candle)
 
+        if not exit_signal:
+            exit_signal = get_time_exit_signal(open_position, latest_candle)
+
         if exit_signal:
             save_signal(
                 market_id=market_id,
@@ -772,6 +864,20 @@ def run_paper_strategy() -> None:
             return
 
     if signal == "BUY":
+        entry_filter_passed, entry_filter_reason = get_entry_filter_status(candles)
+        print("entry_filter:", entry_filter_reason)
+
+        if not entry_filter_passed:
+            save_signal(
+                market_id=market_id,
+                candle=latest_candle,
+                signal_type="HOLD",
+                reason=f"BUY blocked by entry filter: {entry_filter_reason}",
+            )
+            update_mark_to_market(market_id, latest_candle)
+            print(f"BUY blocked by entry filter: {entry_filter_reason}")
+            return
+
         if USE_ML_FILTER:
             if ml_buy_probability is None:
                 save_signal(
@@ -808,6 +914,7 @@ def run_paper_strategy() -> None:
             reason=(
                 f"SMA{SHORT_PERIOD} crossed above SMA{LONG_PERIOD} "
                 f"and RSI > {RSI_BUY_THRESHOLD} "
+                f"and entry filter passed: {entry_filter_reason} "
                 f"and ML proba={ml_buy_probability}"
             ),
         )
