@@ -1,0 +1,2 @@
+symbol,timeframe,folds,train_rows,test_rows,step_rows,selection_objective,fee_rate,initial_cash,test_trade_count,test_total_pnl,test_avg_pnl,avg_test_win_rate,test_profit_factor,profitable_folds,profitable_fold_rate
+SOLUSDT,5m,17,5000,1000,1000,total_pnl,0.0006,10000.0,107,-196.03699877097108,-1.8321214838408513,34.93464052287582,0.7188371017452708,5,29.411764705882355
